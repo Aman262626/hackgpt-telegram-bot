@@ -2,9 +2,10 @@
 import os
 import logging
 import requests
+import asyncio
 from flask import Flask, request
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -26,17 +27,18 @@ logger = logging.getLogger(__name__)
 # Configuration
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CUSTOM_API_URL = os.getenv('CUSTOM_API_URL', 'https://hackgpt-backend.onrender.com')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')  # Will be set in Render
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
 PORT = int(os.getenv('PORT', 10000))
 
-# Initialize Flask app for webhook
+# Initialize Flask app
 app = Flask(__name__)
 
-# Initialize bot application
-bot_app = None
+# Global bot application
+bot_application = None
 
-async def get_ai_response(prompt: str, persona: str = "hackGPT") -> str:
-    """Call custom Flask API backend"""
+# Function to call custom Flask API
+def get_ai_response_sync(prompt: str, persona: str = "hackGPT") -> str:
+    """Call custom Flask API backend (synchronous version)"""
     try:
         response = requests.post(
             f"{CUSTOM_API_URL}/api/chat",
@@ -61,6 +63,7 @@ async def get_ai_response(prompt: str, persona: str = "hackGPT") -> str:
         logger.error(f"API call error: {e}")
         return f"❌ Error calling API: {str(e)}"
 
+# Command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command handler"""
     user = update.effective_user
@@ -127,8 +130,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Send typing action
     await update.message.chat.send_action('typing')
     
-    # Get response from custom API
-    ai_response = await get_ai_response(user_message, persona)
+    # Get response from custom API (sync version in executor)
+    loop = asyncio.get_event_loop()
+    ai_response = await loop.run_in_executor(None, get_ai_response_sync, user_message, persona)
     
     # Send response
     await update.message.reply_text(ai_response)
@@ -137,62 +141,74 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Log errors"""
     logger.error(f"Update {update} caused error {context.error}")
 
+# Flask routes
 @app.route('/', methods=['GET'])
 def index():
-    """Health check endpoint for Render"""
-    return {"status": "Bot is running", "message": "HackGPT Telegram Bot is active!"}, 200
+    """Health check endpoint"""
+    return {"status": "running", "message": "HackGPT Telegram Bot is active!"}, 200
 
 @app.route('/webhook', methods=['POST'])
-async def webhook():
-    """Handle incoming webhook requests from Telegram"""
+def webhook():
+    """Handle webhook requests from Telegram"""
     try:
-        update = Update.de_json(request.get_json(force=True), bot_app.bot)
-        await bot_app.process_update(update)
+        data = request.get_json(force=True)
+        update = Update.de_json(data, bot_application.bot)
+        
+        # Process update in asyncio context
+        asyncio.run(bot_application.process_update(update))
+        
         return 'OK', 200
     except Exception as e:
         logger.error(f"Webhook error: {e}")
-        return 'Error', 500
+        return str(e), 500
 
-async def setup_application():
+def setup_bot():
     """Setup bot application"""
-    global bot_app
+    global bot_application
     
     if not TELEGRAM_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN not found in environment variables!")
-        return None
+        logger.error("TELEGRAM_BOT_TOKEN not found!")
+        raise ValueError("TELEGRAM_BOT_TOKEN is required")
     
     # Create application
-    bot_app = Application.builder().token(TELEGRAM_TOKEN).build()
+    bot_application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Register handlers
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("help", help_command))
-    bot_app.add_handler(CommandHandler("persona", set_persona))
-    bot_app.add_handler(CommandHandler("reset", reset_chat))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    bot_application.add_handler(CommandHandler("start", start))
+    bot_application.add_handler(CommandHandler("help", help_command))
+    bot_application.add_handler(CommandHandler("persona", set_persona))
+    bot_application.add_handler(CommandHandler("reset", reset_chat))
+    bot_application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Register error handler
-    bot_app.add_error_handler(error_handler)
+    bot_application.add_error_handler(error_handler)
     
-    # Initialize application
-    await bot_app.initialize()
+    # Initialize and set webhook
+    async def init_bot():
+        await bot_application.initialize()
+        
+        if WEBHOOK_URL:
+            webhook_url = f"{WEBHOOK_URL}/webhook"
+            await bot_application.bot.set_webhook(url=webhook_url)
+            logger.info(f"Webhook set to: {webhook_url}")
+        else:
+            logger.warning("WEBHOOK_URL not set! Bot may not work properly.")
     
-    # Set webhook
-    if WEBHOOK_URL:
-        webhook_url = f"{WEBHOOK_URL}/webhook"
-        await bot_app.bot.set_webhook(url=webhook_url)
-        logger.info(f"Webhook set to: {webhook_url}")
+    # Run initialization
+    asyncio.run(init_bot())
     
-    logger.info("Bot application setup complete!")
-    return bot_app
+    logger.info("Bot setup complete!")
+    return bot_application
 
 if __name__ == '__main__':
-    import asyncio
-    
-    # Setup bot in async context
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(setup_application())
-    
-    # Run Flask app
-    logger.info(f"Starting Flask server on port {PORT}")
-    app.run(host='0.0.0.0', port=PORT, debug=False)
+    try:
+        # Setup bot
+        setup_bot()
+        
+        # Run Flask app
+        logger.info(f"Starting Flask server on 0.0.0.0:{PORT}")
+        app.run(host='0.0.0.0', port=PORT, debug=False)
+        
+    except Exception as e:
+        logger.error(f"Failed to start bot: {e}")
+        raise
