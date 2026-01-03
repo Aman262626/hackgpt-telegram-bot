@@ -2,6 +2,7 @@
 import os
 import logging
 import requests
+from flask import Flask, request
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -11,7 +12,6 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
-from flask import Flask, request
 
 # Load environment variables
 load_dotenv()
@@ -26,13 +26,15 @@ logger = logging.getLogger(__name__)
 # Configuration
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CUSTOM_API_URL = os.getenv('CUSTOM_API_URL', 'https://hackgpt-backend.onrender.com')
-RENDER_EXTERNAL_URL = os.getenv('RENDER_EXTERNAL_URL', '')
-PORT = int(os.getenv('PORT', 8443))
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')  # Will be set in Render
+PORT = int(os.getenv('PORT', 10000))
 
-# Flask app for webhook
+# Initialize Flask app for webhook
 app = Flask(__name__)
 
-# Function to call your custom Flask API
+# Initialize bot application
+bot_app = None
+
 async def get_ai_response(prompt: str, persona: str = "hackGPT") -> str:
     """Call custom Flask API backend"""
     try:
@@ -59,7 +61,6 @@ async def get_ai_response(prompt: str, persona: str = "hackGPT") -> str:
         logger.error(f"API call error: {e}")
         return f"❌ Error calling API: {str(e)}"
 
-# Command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command handler"""
     user = update.effective_user
@@ -136,74 +137,62 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Log errors"""
     logger.error(f"Update {update} caused error {context.error}")
 
-# Webhook routes
-@app.route('/')
+@app.route('/', methods=['GET'])
 def index():
-    return "HackGPT Telegram Bot is running! 🚀", 200
+    """Health check endpoint for Render"""
+    return {"status": "Bot is running", "message": "HackGPT Telegram Bot is active!"}, 200
 
-@app.route('/health')
-def health():
-    return "OK", 200
-
-@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
+@app.route('/webhook', methods=['POST'])
 async def webhook():
-    """Handle webhook updates"""
+    """Handle incoming webhook requests from Telegram"""
     try:
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        await application.process_update(update)
-        return "OK", 200
+        update = Update.de_json(request.get_json(force=True), bot_app.bot)
+        await bot_app.process_update(update)
+        return 'OK', 200
     except Exception as e:
         logger.error(f"Webhook error: {e}")
-        return "Error", 500
+        return 'Error', 500
 
-# Global application variable
-application = None
-
-async def setup_webhook():
-    """Setup webhook for Render"""
-    global application
+async def setup_application():
+    """Setup bot application"""
+    global bot_app
     
     if not TELEGRAM_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN not found in environment variables!")
         return None
     
     # Create application
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    bot_app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Register handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("persona", set_persona))
-    application.add_handler(CommandHandler("reset", reset_chat))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("help", help_command))
+    bot_app.add_handler(CommandHandler("persona", set_persona))
+    bot_app.add_handler(CommandHandler("reset", reset_chat))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Register error handler
-    application.add_error_handler(error_handler)
+    bot_app.add_error_handler(error_handler)
     
     # Initialize application
-    await application.initialize()
-    await application.bot.initialize()
+    await bot_app.initialize()
     
     # Set webhook
-    webhook_url = f"{RENDER_EXTERNAL_URL}/{TELEGRAM_TOKEN}"
-    await application.bot.set_webhook(url=webhook_url)
+    if WEBHOOK_URL:
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        await bot_app.bot.set_webhook(url=webhook_url)
+        logger.info(f"Webhook set to: {webhook_url}")
     
-    logger.info(f"Webhook set to: {webhook_url}")
-    logger.info("Bot started successfully with webhook mode!")
-    
-    return application
-
-def main():
-    """Start the bot with webhook"""
-    import asyncio
-    
-    # Setup webhook
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(setup_webhook())
-    
-    # Run Flask app
-    app.run(host='0.0.0.0', port=PORT)
+    logger.info("Bot application setup complete!")
+    return bot_app
 
 if __name__ == '__main__':
-    main()
+    import asyncio
+    
+    # Setup bot in async context
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(setup_application())
+    
+    # Run Flask app
+    logger.info(f"Starting Flask server on port {PORT}")
+    app.run(host='0.0.0.0', port=PORT, debug=False)
