@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 import os
 import logging
-import asyncio
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify
 from dotenv import load_dotenv
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -13,6 +12,8 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
+import asyncio
+import threading
 
 # Load environment variables
 load_dotenv()
@@ -27,15 +28,19 @@ logger = logging.getLogger(__name__)
 # Configuration
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CUSTOM_API_URL = os.getenv('CUSTOM_API_URL', 'https://hackgpt-backend.onrender.com')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 PORT = int(os.getenv('PORT', 10000))
+
+if not TELEGRAM_TOKEN:
+    logger.error("ERROR: TELEGRAM_BOT_TOKEN not found!")
+    TELEGRAM_TOKEN = "dummy_token"  # Placeholder
 
 # Initialize Flask app
 app = Flask(__name__)
 
-# Global application object
+# Global variables
 application = None
-initialized = False
+bot_thread = None
+bot_running = False
 
 def get_ai_response_sync(prompt: str, persona: str = "hackGPT") -> str:
     """Call custom Flask API backend (synchronous)"""
@@ -55,54 +60,51 @@ def get_ai_response_sync(prompt: str, persona: str = "hackGPT") -> str:
             data = response.json()
             return data.get('response', 'No response received')
         else:
-            return f"Error: API returned status {response.status_code}"
+            return f"API Error {response.status_code}"
     
     except requests.exceptions.Timeout:
-        return "⏱️ Request timeout. API response time bahut zyada hai."
+        return "⏱️ Request timeout. Server response time zyada hai."
     except Exception as e:
         logger.error(f"API call error: {e}")
-        return f"❌ Error calling API: {str(e)}"
+        return f"❌ Error: {str(e)[:100]}"
 
 # Command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command handler"""
     try:
         user = update.effective_user
-        welcome_message = f"""
-🤖 Welcome {user.mention_html()}!
+        welcome_message = f"""🤖 Welcome {user.first_name}!
 
-Main HackGPT Bot hu, powered by custom Flask API backend.
+Main HackGPT Bot hu, powered by custom Flask API.
 
-Available Commands:
+Commands:
 /start - Bot ko start karo
-/help - Help message dikhao
-/persona [name] - Persona change karo
-/reset - Conversation reset karo
+/help - Help message
+/persona [name] - Persona set karo
+/reset - Chat reset karo
 
-Direct message bhejo aur main tumhare sawaal ka jawab dunga! 🚀
-        """
-        await update.message.reply_html(welcome_message)
+Just message karo kuch bhi! 🚀"""
+        await update.message.reply_text(welcome_message)
     except Exception as e:
         logger.error(f"Start command error: {e}")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Help command handler"""
     try:
-        help_text = """
-📚 HackGPT Bot Help
+        help_text = """📚 HackGPT Bot Help
 
 Commands:
-• /start - Bot shuru karo
-• /help - Ye message
-• /persona [name] - AI persona set karo
-• /reset - Chat history clear karo
+/start - Bot start
+/help - Ye help message
+/persona [name] - AI persona set karo
+/reset - Conversation clear
 
-Personas:
-• hackGPT (default)
-• DAN
-• chatGPT-DEV
-        """
-        await update.message.reply_text(help_text, parse_mode='Markdown')
+Personas: hackGPT, DAN, chatGPT-DEV
+
+Example:
+/persona DAN
+What is SQL injection?"""
+        await update.message.reply_text(help_text)
     except Exception as e:
         logger.error(f"Help command error: {e}")
 
@@ -110,20 +112,20 @@ async def set_persona(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Set AI persona"""
     try:
         if context.args:
-            persona = context.args[0]
+            persona = ' '.join(context.args)
             context.user_data['persona'] = persona
             await update.message.reply_text(f"✅ Persona set to: {persona}")
         else:
-            current_persona = context.user_data.get('persona', 'hackGPT')
-            await update.message.reply_text(f"Current persona: {current_persona}")
+            current = context.user_data.get('persona', 'hackGPT')
+            await update.message.reply_text(f"Current persona: {current}")
     except Exception as e:
-        logger.error(f"Set persona error: {e}")
+        logger.error(f"Persona error: {e}")
 
 async def reset_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reset conversation"""
     try:
         context.user_data.clear()
-        await update.message.reply_text("🔄 Conversation reset ho gaya!")
+        await update.message.reply_text("🔄 Conversation reset!")
     except Exception as e:
         logger.error(f"Reset error: {e}")
 
@@ -131,107 +133,145 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle user messages"""
     try:
         user_message = update.message.text
+        if not user_message:
+            return
+            
         persona = context.user_data.get('persona', 'hackGPT')
         
         # Send typing action
-        await update.message.chat.send_action('typing')
-        
-        # Get response from custom API
-        loop = asyncio.get_event_loop()
-        ai_response = await loop.run_in_executor(None, get_ai_response_sync, user_message, persona)
-        
-        # Send response in chunks if too long
-        if len(ai_response) > 4096:
-            for chunk in [ai_response[i:i+4096] for i in range(0, len(ai_response), 4096)]:
-                await update.message.reply_text(chunk)
-        else:
-            await update.message.reply_text(ai_response)
-    except Exception as e:
-        logger.error(f"Error handling message: {e}")
         try:
-            await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+            await update.message.chat.send_action('typing')
+        except:
+            pass
+        
+        # Get response from API
+        ai_response = get_ai_response_sync(user_message, persona)
+        
+        # Send response (split if too long)
+        if len(ai_response) > 4096:
+            for i in range(0, len(ai_response), 4096):
+                chunk = ai_response[i:i+4096]
+                try:
+                    await update.message.reply_text(chunk)
+                except Exception as e:
+                    logger.error(f"Error sending chunk: {e}")
+        else:
+            try:
+                await update.message.reply_text(ai_response)
+            except Exception as e:
+                logger.error(f"Error sending message: {e}")
+    except Exception as e:
+        logger.error(f"Message handler error: {e}")
+        try:
+            await update.message.reply_text("❌ Error processing message")
         except:
             pass
 
 async def error_handler(update, context):
     """Log errors"""
-    logger.error(f"Error: {context.error}")
+    logger.error(f"Telegram error: {context.error}")
+
+async def setup_application():
+    """Initialize bot application with long polling"""
+    global application
+    
+    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "dummy_token":
+        logger.error("TELEGRAM_BOT_TOKEN not configured!")
+        return None
+    
+    logger.info("Initializing bot application...")
+    
+    try:
+        # Create application with long polling (NOT webhook)
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("persona", set_persona))
+        application.add_handler(CommandHandler("reset", reset_chat))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # Add error handler
+        application.add_error_handler(error_handler)
+        
+        # Initialize
+        await application.initialize()
+        logger.info("✅ Bot application initialized!")
+        
+        return application
+    except Exception as e:
+        logger.error(f"Failed to initialize bot: {e}")
+        return None
+
+async def run_bot():
+    """Run bot with long polling"""
+    global application, bot_running
+    
+    try:
+        application = await setup_application()
+        if not application:
+            logger.error("Failed to setup application")
+            return
+        
+        logger.info("Starting bot with long polling...")
+        bot_running = True
+        await application.start()
+        await application.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+        logger.info("✅ Bot polling started!")
+        await application.updater.idle()
+    except Exception as e:
+        logger.error(f"Bot error: {e}", exc_info=True)
+    finally:
+        if application:
+            try:
+                await application.stop()
+                await application.shutdown()
+            except:
+                pass
+        bot_running = False
+
+def run_bot_thread():
+    """Run bot in separate thread"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(run_bot())
+    except Exception as e:
+        logger.error(f"Thread error: {e}")
+    finally:
+        loop.close()
 
 # Flask routes
 @app.route('/', methods=['GET'])
 def index():
     """Health check endpoint"""
-    return jsonify({"status": "running", "message": "HackGPT Telegram Bot is active!"}), 200
+    return jsonify({
+        "status": "running" if bot_running else "initializing",
+        "message": "HackGPT Telegram Bot is active!"
+    }), 200
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Handle webhook from Telegram"""
-    try:
-        global application
-        
-        if not application:
-            logger.error("Application not initialized")
-            return jsonify({"error": "Bot not ready"}), 503
-        
-        data = request.get_json(force=True)
-        update = Update.de_json(data, application.bot)
-        
-        if update:
-            # Process update asynchronously without blocking
-            asyncio.create_task(application.process_update(update))
-        
-        return jsonify({"status": "ok"}), 200
-    except Exception as e:
-        logger.error(f"Webhook error: {e}", exc_info=True)
-        return jsonify({"error": "Webhook processing failed"}), 200
-
-async def setup_application():
-    """Initialize bot application"""
-    global application
-    
-    if not TELEGRAM_TOKEN:
-        raise ValueError("TELEGRAM_BOT_TOKEN is required")
-    
-    logger.info("Initializing bot application...")
-    
-    # Create application
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("persona", set_persona))
-    application.add_handler(CommandHandler("reset", reset_chat))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Add error handler
-    application.add_error_handler(error_handler)
-    
-    # Initialize application
-    await application.initialize()
-    
-    logger.info("✅ Bot application initialized successfully!")
-    return application
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({"status": "ok"}), 200
 
 @app.before_request
-def before_request():
-    """Initialize bot on first request"""
-    global application, initialized
+def startup():
+    """Start bot thread on first request"""
+    global bot_thread, application
     
-    if not initialized and TELEGRAM_TOKEN:
-        try:
-            logger.info("Setting up application...")
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            application = loop.run_until_complete(setup_application())
-            initialized = True
-            logger.info("Application ready!")
-        except Exception as e:
-            logger.error(f"Failed to initialize bot: {e}", exc_info=True)
+    if bot_thread is None:
+        logger.info("Starting bot thread...")
+        bot_thread = threading.Thread(target=run_bot_thread, daemon=True)
+        bot_thread.start()
 
 if __name__ == '__main__':
     try:
-        logger.info(f"Starting HackGPT Telegram Bot on 0.0.0.0:{PORT}")
-        app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+        logger.info(f"Starting Flask server on 0.0.0.0:{PORT}")
+        app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
     except Exception as e:
-        logger.error(f"Failed to start Flask app: {e}", exc_info=True)
+        logger.error(f"Flask startup error: {e}")
