@@ -7,7 +7,7 @@
 - 🔐 Multiple AI Personas (hackGPT, DAN, chatGPT-DEV)
 - 🚀 Custom Flask API Integration
 - 💬 Interactive Telegram Interface
-- ☁️ Ready for Render Deployment
+- ☁️ Webhook-based for Render Free Tier
 - 🔄 Conversation Management
 
 ## Quick Start
@@ -17,6 +17,7 @@
 - Python 3.11+
 - Telegram Bot Token (from [@BotFather](https://t.me/BotFather))
 - Custom API Backend Running
+- Render Account (Free tier works!)
 
 ### Local Development
 
@@ -48,32 +49,41 @@
    python bot.py
    ```
 
-## Deployment on Render
+## Deployment on Render (FREE - Web Service)
 
-### Step 1: Prepare Repository
+### Step 1: Create Bot Token
 
-Repository is already configured with:
-- `Procfile` - Render worker configuration
-- `runtime.txt` - Python version specification
-- `requirements.txt` - Dependencies
+1. Telegram pe [@BotFather](https://t.me/BotFather) ko search karo
+2. `/newbot` command send karo
+3. Bot ka naam aur username set karo
+4. Token copy kar lo
 
 ### Step 2: Deploy to Render
 
 1. Go to [Render Dashboard](https://dashboard.render.com/)
 2. Click **New** → **Web Service**
-3. Connect your GitHub repository
+3. Connect GitHub repository: `Aman262626/hackgpt-telegram-bot`
 4. Configure:
    - **Name**: `hackgpt-telegram-bot`
-   - **Environment**: Python
+   - **Environment**: `Python 3`
    - **Build Command**: `pip install -r requirements.txt`
    - **Start Command**: `python bot.py`
-   - **Instance Type**: Free
+   - **Instance Type**: `Free`
 
-5. Add Environment Variables:
+5. **Add Environment Variables**:
    - `TELEGRAM_BOT_TOKEN`: Your bot token from @BotFather
    - `CUSTOM_API_URL`: `https://hackgpt-backend.onrender.com`
+   - `WEBHOOK_URL`: `https://hackgpt-telegram-bot.onrender.com` (your Render URL)
+   - `PORT`: `10000` (Render default)
 
 6. Click **Create Web Service**
+
+### Step 3: Verify Deployment
+
+1. Wait for deployment to complete (2-3 minutes)
+2. Check logs mein "Bot application setup complete!" message
+3. Telegram pe apne bot ko message bhejo
+4. Bot respond karega!
 
 ## Bot Commands
 
@@ -93,6 +103,23 @@ Bot: ✅ Persona set to: DAN
 
 User: What is SQL injection?
 Bot: [Response from custom API backend]
+```
+
+## Architecture
+
+### Webhook Mode (Render Free Tier)
+
+Render free tier ke liye bot **webhook mode** mein chalta hai:
+
+1. Telegram updates ko webhook ke through receive karta hai
+2. Flask web server HTTP requests handle karta hai
+3. Health check endpoint (`/`) Render ko active rakhta hai
+4. No polling = No multiple instance conflicts
+
+### API Integration Flow
+
+```
+Telegram User → Telegram Server → Webhook (/webhook) → Bot Handler → Custom Flask API → AI Response → User
 ```
 
 ## Custom API Backend
@@ -118,7 +145,7 @@ def chat():
 
 ```
 hackgpt-telegram-bot/
-├── bot.py              # Main bot application
+├── bot.py              # Main bot application (webhook-based)
 ├── requirements.txt    # Python dependencies
 ├── .env.example        # Environment variables template
 ├── Procfile           # Render deployment config
@@ -129,30 +156,46 @@ hackgpt-telegram-bot/
 
 ## Environment Variables
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | Yes |
-| `CUSTOM_API_URL` | Flask API backend URL | Yes |
-
-## Getting Telegram Bot Token
-
-1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
-2. Send `/newbot` command
-3. Follow instructions to create your bot
-4. Copy the token provided
-5. Add token to `.env` file
+| Variable | Description | Required | Example |
+|----------|-------------|----------|----------|
+| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | Yes | `1234567890:ABC...` |
+| `CUSTOM_API_URL` | Flask API backend URL | Yes | `https://hackgpt-backend.onrender.com` |
+| `WEBHOOK_URL` | Your Render service URL | Yes | `https://your-app.onrender.com` |
+| `PORT` | Port for Flask server | No (default: 10000) | `10000` |
 
 ## Troubleshooting
 
 ### Bot not responding
-- Check if `TELEGRAM_BOT_TOKEN` is correctly set
-- Verify API backend is running and accessible
-- Check Render logs for errors
+
+1. Check Render logs for errors
+2. Verify `TELEGRAM_BOT_TOKEN` is correct
+3. Verify `WEBHOOK_URL` matches your Render service URL
+4. Check if API backend is running
+
+### "Exited with status 1" error
+
+1. Check if all environment variables are set
+2. Verify Python version (3.11+)
+3. Check Render logs for specific error messages
 
 ### API timeout errors
-- Increase timeout value in `bot.py`
-- Check API backend performance
-- Verify network connectivity
+
+1. Check if `CUSTOM_API_URL` is accessible
+2. Verify API backend is not sleeping (Render free tier)
+3. Increase timeout in `bot.py` if needed
+
+### Webhook not working
+
+1. Verify `WEBHOOK_URL` is correct (no trailing slash)
+2. Check Render service is deployed successfully
+3. Test health endpoint: `https://your-app.onrender.com/`
+4. Check Telegram webhook status: `https://api.telegram.org/bot<TOKEN>/getWebhookInfo`
+
+## Free Tier Limitations
+
+- Render free tier services spin down after 15 minutes of inactivity
+- First request after spin down may take 30-50 seconds
+- 750 hours/month runtime limit (sufficient for personal use)
 
 ## Contributing
 
@@ -170,3 +213,8 @@ MIT License
 ---
 
 ⭐ Star this repo if you find it helpful!
+
+## Related Projects
+
+- [hackGPT Backend](https://hackgpt-backend.onrender.com) - Custom Flask API
+- [Original hackGPT](https://github.com/NoDataFound/hackGPT) - Inspiration for this project
