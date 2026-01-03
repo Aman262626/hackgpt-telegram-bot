@@ -42,9 +42,9 @@ def get_ai_response_sync(prompt: str, persona: str = "hackGPT") -> str:
     """Call custom Flask API backend (synchronous)"""
     try:
         response = requests.post(
-            f"{CUSTOM_API_URL}/api/chat",
+            f"{CUSTOM_API_URL}/chat",
             json={
-                "prompt": prompt,
+                "message": prompt,
                 "persona": persona,
                 "temperature": 0.7,
                 "max_tokens": 2000
@@ -54,7 +54,8 @@ def get_ai_response_sync(prompt: str, persona: str = "hackGPT") -> str:
         
         if response.status_code == 200:
             data = response.json()
-            return data.get('response', 'No response received')
+            # Backend returns 'response' or 'answer' key
+            return data.get('response') or data.get('answer') or 'No response received'
         else:
             return f"API Error {response.status_code}"
     except requests.exceptions.Timeout:
