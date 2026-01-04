@@ -21,6 +21,7 @@ from telegram.ext import (
 
 # Import bot manager
 import bot_manager
+from complete_integration import setup_complete_integration, handle_start_with_tracking  # ← ADD THIS
 
 load_dotenv()
 
@@ -301,7 +302,11 @@ def lang_keyboard(current: str) -> InlineKeyboardMarkup:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = update.effective_user
+        # ⬇️ ADD THIS LINE FIRST ⬇️
+        await handle_start_with_tracking(update, context)
+        
         add_or_update_user(user)
+
         
         if is_user_banned(user.id):
             await update.message.reply_text("You are banned.")
@@ -990,7 +995,12 @@ async def setup_application():
     application.add_handler(CallbackQueryHandler(on_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_error_handler(error_handler)
-    return application
+    application.add_error_handler(error_handler)
+
+# ⬇️ ADD THIS LINE ⬇️
+setup_complete_integration(application)
+
+return application
 
 async def run_polling():
     global application, bot_running
