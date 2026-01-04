@@ -256,6 +256,24 @@ def get_client_bot_stats() -> dict:
     finally:
         conn.close()
 
+def update_bot_stats(bot_id: int, users: int = 0, messages: int = 0) -> tuple:
+    """Update client bot statistics"""
+    conn = sqlite3.connect('bot_users.db')
+    c = conn.cursor()
+    try:
+        if users > 0:
+            c.execute('UPDATE client_bots SET total_users = total_users + ? WHERE bot_id = ?', (users, bot_id))
+        if messages > 0:
+            c.execute('UPDATE client_bots SET total_messages = total_messages + ?, last_active = ? WHERE bot_id = ?',
+                      (messages, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), bot_id))
+        conn.commit()
+        return (True, "Stats updated")
+    except Exception as e:
+        logger.error(f"Error updating stats: {e}")
+        return (False, str(e))
+    finally:
+        conn.close()
+
 async def start_client_bot(bot_id: int, bot_token: str, setup_handlers_func) -> tuple:
     """Start a client bot instance"""
     try:
