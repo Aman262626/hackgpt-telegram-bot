@@ -2,9 +2,8 @@
 import os
 import logging
 import requests
-import asyncio
 from datetime import datetime
-from flask import Flask, jsonify
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
 from telegram import Update
@@ -30,6 +29,7 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CUSTOM_API_URL = os.getenv('CUSTOM_API_URL', 'https://hackgpt-backend.onrender.com')
 DATABASE_URL = os.getenv('DATABASE_URL')
 PORT = int(os.getenv('PORT', 10000))
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://hackgpt-telegram-bot.onrender.com')
 
 if not TELEGRAM_TOKEN:
     logger.error("ERROR: TELEGRAM_BOT_TOKEN not found!")
@@ -37,7 +37,6 @@ if not TELEGRAM_TOKEN:
 
 app = Flask(__name__)
 application = None
-bot_running = False
 
 SUPPORTED_LANGS = {"en": "English", "hi": "Hindi", "hinglish": "Hinglish"}
 SUPPORTED_PERSONAS = ["hackGPT", "DAN", "chatGPT-DEV"]
@@ -577,7 +576,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update, context):
     logger.error(f"Error: {context.error}")
 
-async def setup_application():
+def setup_application():
     global application
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "dummy_token":
         logger.error("TELEGRAM_BOT_TOKEN not configured!")
@@ -600,41 +599,36 @@ async def setup_application():
     application.add_error_handler(error_handler)
     return application
 
-async def run_polling():
-    global application, bot_running
-    application = await setup_application()
-    if not application:
-        return
-
-    bot_running = True
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-    logger.info("Bot started!")
-    await asyncio.Event().wait()
-
-import threading
-def run_bot_in_thread():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(run_polling())
-
 @app.route('/', methods=['GET'])
 def index():
-    return jsonify({"status": "running" if bot_running else "starting", "message": "HackGPT Bot Active!"}), 200
+    return jsonify({"status": "active", "message": "HackGPT Bot is running!"}), 200
 
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"ok": True}), 200
 
-@app.before_request
-def startup():
-    global bot_thread
-    if bot_thread is None:
-        bot_thread = threading.Thread(target=run_bot_in_thread, daemon=True)
-        bot_thread.start()
-
-bot_thread = None
+@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
+async def webhook():
+    if application is None:
+        return jsonify({"error": "Bot not initialized"}), 503
+    
+    try:
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        await application.process_update(update)
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
+    setup_application()
+    if application:
+        import asyncio
+        async def set_webhook():
+            webhook_url = f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}"
+            await application.bot.set_webhook(url=webhook_url)
+            logger.info(f"Webhook set to: {webhook_url}")
+        
+        asyncio.run(set_webhook())
+    
+    app.run(host='0.0.0.0', port=PORT, debug=False)
