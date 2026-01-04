@@ -256,8 +256,8 @@ def get_ai_response_sync(prompt: str, persona: str = "hackGPT", user_id: int = N
             return data.get('response') or data.get('answer') or 'No response received from AI'
         else:
             logger.error(f"API Error {response.status_code}: {response.text}")
-            return f"API Error {response.status_code}. Please try again."
-            
+            return f"❌ API Error {response.status_code}. Please try again."
+    
     except requests.exceptions.Timeout:
         logger.error("Claude API timeout")
         return "⏱️ Request timeout. Claude API busy hai, please try again."
@@ -265,8 +265,8 @@ def get_ai_response_sync(prompt: str, persona: str = "hackGPT", user_id: int = N
         logger.error("Claude API connection error")
         return "🔌 Connection error. API server se connect nahi ho paya."
     except Exception as e:
-        logger.error(f"Claude API error: {e}")
-        return f"❌ Error: {str(e)[:150]}"
+        logger.error(f"Unexpected error: {e}")
+        return f"❌ Error: {str(e)[:100]}"
 
 def ensure_defaults(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault('persona', 'hackGPT')
