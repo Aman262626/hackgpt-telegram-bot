@@ -32,7 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-CUSTOM_API_URL = os.getenv('CUSTOM_API_URL', 'https://hackgpt-backend.onrender.com')
+CUSTOM_API_URL = os.getenv('CUSTOM_API_URL', 'https://claude-opus-chatbot.onrender.com')
 DATABASE_URL = os.getenv('DATABASE_URL')
 PORT = int(os.getenv('PORT', 10000))
 
@@ -225,22 +225,48 @@ def build_prompt(user_text: str, lang: str) -> str:
         return f"Please reply in Hinglish (mix Hindi + English, Roman script).\n\nUser: {user_text}"
     return f"Please reply in English.\n\nUser: {user_text}"
 
-def get_ai_response_sync(prompt: str, persona: str = "hackGPT") -> str:
+def get_ai_response_sync(prompt: str, persona: str = "hackGPT", user_id: int = None) -> str:
+    """
+    Updated to use Claude Opus API
+    API: https://claude-opus-chatbot.onrender.com
+    Features: conversation memory, multi-language, real-time data
+    """
     try:
+        # Create conversation ID for memory feature
+        conv_id = f"telegram_user_{user_id}" if user_id else None
+        
+        # Prepare request payload for Claude API
+        payload = {
+            "message": prompt,
+            "conversation_id": conv_id,
+            "use_memory": True if conv_id else False
+        }
+        
+        logger.info(f"Sending request to Claude API: {CUSTOM_API_URL}/chat")
         response = requests.post(
             f"{CUSTOM_API_URL}/chat",
-            json={"message": prompt, "persona": persona, "temperature": 0.7, "max_tokens": 2000},
-            timeout=30,
+            json=payload,
+            timeout=45,  # Increased timeout for Claude API
+            headers={"Content-Type": "application/json"}
         )
+        
         if response.status_code == 200:
             data = response.json()
-            return data.get('response') or data.get('answer') or 'No response received'
-        return f"API Error {response.status_code}"
+            # Claude API returns 'response' field
+            return data.get('response') or data.get('answer') or 'No response received from AI'
+        else:
+            logger.error(f"API Error {response.status_code}: {response.text}")
+            return f"API Error {response.status_code}. Please try again."
+            
     except requests.exceptions.Timeout:
-        return "Request timeout. Server busy hai."
+        logger.error("Claude API timeout")
+        return "⏱️ Request timeout. Claude API busy hai, please try again."
+    except requests.exceptions.ConnectionError:
+        logger.error("Claude API connection error")
+        return "🔌 Connection error. API server se connect nahi ho paya."
     except Exception as e:
-        logger.error(f"API error: {e}")
-        return f"Error: {str(e)[:100]}"
+        logger.error(f"Claude API error: {e}")
+        return f"❌ Error: {str(e)[:150]}"
 
 def ensure_defaults(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault('persona', 'hackGPT')
@@ -250,7 +276,7 @@ def status_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     ensure_defaults(context)
     persona = context.user_data.get('persona', 'hackGPT')
     lang = context.user_data.get('lang', 'hinglish')
-    return f"Current persona: {persona}\nCurrent language: {SUPPORTED_LANGS.get(lang, lang)}"
+    return f"Current persona: {persona}\nCurrent language: {SUPPORTED_LANGS.get(lang, lang)}\n\n🤖 Powered by Claude Opus AI"
 
 def main_menu_keyboard(is_admin_user: bool = False) -> InlineKeyboardMarkup:
     buttons = [
@@ -311,11 +337,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         ensure_defaults(context)
         welcome = (
-            f"Welcome {user.first_name}!\n\n"
-            "Main HackGPT Bot hu!\n\n"
+            f"🎉 Welcome {user.first_name}!\n\n"
+            "🤖 Main HackGPT Bot hu, powered by Claude Opus AI!\n\n"
+            "✨ Features:\n"
+            "• Intelligent conversations with memory\n"
+            "• Multi-language support\n"
+            "• Real-time information\n\n"
             "Buttons se settings change karo.\n\n"
             f"{status_text(context)}\n\n"
-            "Just message karo!"
+            "💬 Just message karo aur main respond karunga!"
         )
         await update.message.reply_text(welcome, reply_markup=main_menu_keyboard(is_admin(user.id)))
     except Exception as e:
@@ -329,17 +359,22 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     ensure_defaults(context)
     text = (
-        "📖 Help\n\n"
+        "📖 Help - Claude Opus Bot\n\n"
         "Commands:\n"
         "/start - Start bot\n"
         "/help - Show help\n"
         "/persona - Change persona\n"
         "/lang - Change language\n"
-        "/reset - Reset chat\n"
+        "/reset - Reset chat\n\n"
+        "🤖 AI Features:\n"
+        "• Conversation memory\n"
+        "• Multi-language support\n"
+        "• Real-time information\n"
+        "• Natural conversations"
     )
     if is_admin(user.id):
         text += (
-            "\n🔧 Admin Commands:\n"
+            "\n\n🔧 Admin Commands:\n"
             "/adminstats - Bot statistics\n"
             "/userlist - All users\n"
             "/userinfo <id> - User details\n"
@@ -367,7 +402,7 @@ async def set_persona(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         persona = ' '.join(context.args)
         context.user_data['persona'] = persona
-        await update.message.reply_text(f"Persona: {persona}", reply_markup=main_menu_keyboard(is_admin(user.id)))
+        await update.message.reply_text(f"✅ Persona set: {persona}", reply_markup=main_menu_keyboard(is_admin(user.id)))
     else:
         current = context.user_data.get('persona', 'hackGPT')
         await update.message.reply_text("Select persona:\n\n" + status_text(context),
@@ -383,10 +418,10 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         lang = context.args[0].strip().lower()
         if lang not in SUPPORTED_LANGS:
-            await update.message.reply_text("Invalid language")
+            await update.message.reply_text("❌ Invalid language")
             return
         context.user_data['lang'] = lang
-        await update.message.reply_text(f"Language: {SUPPORTED_LANGS[lang]}",
+        await update.message.reply_text(f"✅ Language set: {SUPPORTED_LANGS[lang]}",
                                         reply_markup=main_menu_keyboard(is_admin(user.id)))
     else:
         current = context.user_data.get('lang', 'hinglish')
@@ -405,7 +440,7 @@ async def reset_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data['persona'] = persona
     context.user_data['lang'] = lang
-    await update.message.reply_text("Reset!", reply_markup=main_menu_keyboard(is_admin(user.id)))
+    await update.message.reply_text("✅ Chat reset! Conversation memory cleared.", reply_markup=main_menu_keyboard(is_admin(user.id)))
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -420,7 +455,9 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👥 Total Users: {total}\n"
         f"✅ Active Users: {active}\n"
         f"🚫 Banned Users: {total - active}\n"
-        f"💬 Total Messages: {messages}"
+        f"💬 Total Messages: {messages}\n\n"
+        f"🤖 AI: Claude Opus\n"
+        f"🌐 API: claude-opus-chatbot.onrender.com"
     )
     await update.message.reply_text(text)
 
@@ -799,7 +836,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         context.user_data['persona'] = persona
         context.user_data['lang'] = lang
-        await q.edit_message_text("Reset!\n\n" + status_text(context), reply_markup=main_menu_keyboard(is_admin_user))
+        await q.edit_message_text("✅ Reset! Conversation memory cleared.\n\n" + status_text(context), reply_markup=main_menu_keyboard(is_admin_user))
         return
     if data == "menu:admin":
         if not is_admin_user:
@@ -818,7 +855,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👥 Total Users: {total}\n"
             f"✅ Active Users: {active}\n"
             f"🚫 Banned Users: {total - active}\n"
-            f"💬 Total Messages: {messages}"
+            f"💬 Total Messages: {messages}\n\n"
+            f"🤖 AI: Claude Opus"
         )
         await q.edit_message_text(text, reply_markup=admin_keyboard())
         return
@@ -916,16 +954,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("persona:"):
         p = data.split(":", 1)[1]
         context.user_data['persona'] = p
-        await q.edit_message_text(f"Persona: {p}\n\n" + status_text(context), reply_markup=main_menu_keyboard(is_admin_user))
+        await q.edit_message_text(f"✅ Persona set: {p}\n\n" + status_text(context), reply_markup=main_menu_keyboard(is_admin_user))
         return
 
     if data.startswith("lang:"):
         l = data.split(":", 1)[1]
         if l in SUPPORTED_LANGS:
             context.user_data['lang'] = l
-            await q.edit_message_text(f"Language: {SUPPORTED_LANGS[l]}\n\n" + status_text(context), reply_markup=main_menu_keyboard(is_admin_user))
+            await q.edit_message_text(f"✅ Language set: {SUPPORTED_LANGS[l]}\n\n" + status_text(context), reply_markup=main_menu_keyboard(is_admin_user))
         else:
-            await q.edit_message_text("Invalid\n\n" + status_text(context), reply_markup=main_menu_keyboard(is_admin_user))
+            await q.edit_message_text("❌ Invalid language\n\n" + status_text(context), reply_markup=main_menu_keyboard(is_admin_user))
         return
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -950,7 +988,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     prompt = build_prompt(text, lang)
-    resp = get_ai_response_sync(prompt, persona)
+    # Pass user_id for conversation memory
+    resp = get_ai_response_sync(prompt, persona, user_id=user.id)
 
     if len(resp) > 4096:
         for i in range(0, len(resp), 4096):
@@ -1011,7 +1050,7 @@ async def run_polling():
     await application.initialize()
     await application.start()
     await application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-    logger.info("Bot started successfully!")
+    logger.info("Bot started successfully with Claude Opus AI!")
     logger.info("Multi-Bot Management System initialized!")
     await asyncio.Event().wait()
 
@@ -1025,14 +1064,16 @@ def index():
     stats = bot_manager.get_client_bot_stats()
     return jsonify({
         "status": "running" if bot_running else "starting", 
-        "message": "HackGPT Multi-Bot System Active!",
+        "message": "HackGPT Multi-Bot System - Powered by Claude Opus AI",
+        "api": "claude-opus-chatbot.onrender.com",
+        "features": ["conversation_memory", "multi_language", "real_time_data"],
         "client_bots": stats['total_bots'],
         "active_bots": stats['active_bots']
     }), 200
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({"ok": True}), 200
+    return jsonify({"ok": True, "ai": "Claude Opus"}), 200
 
 @app.before_request
 def startup():
@@ -1040,11 +1081,12 @@ def startup():
     if bot_thread is None:
         bot_thread = threading.Thread(target=run_bot_in_thread, daemon=True)
         bot_thread.start()
-        logger.info("Bot thread started")
+        logger.info("Bot thread started with Claude Opus AI")
 
 bot_thread = None
 
 if __name__ == '__main__':
     logger.info(f"Starting Flask on port {PORT}")
     logger.info("Multi-Bot Management System ready!")
+    logger.info("AI Backend: Claude Opus (claude-opus-chatbot.onrender.com)")
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
