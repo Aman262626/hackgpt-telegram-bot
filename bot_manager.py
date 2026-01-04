@@ -37,6 +37,39 @@ def init_client_bots_db():
     conn.close()
     logger.info("Client bots database initialized")
 
+def verify_bot_token(bot_token: str) -> tuple:
+    """Verify bot token synchronously"""
+    try:
+        # Create a new event loop for this thread if needed
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        async def _verify():
+            try:
+                bot = Bot(token=bot_token)
+                bot_info = await bot.get_me()
+                await bot.close()
+                return (True, bot_info.username, bot_info.first_name)
+            except Exception as e:
+                return (False, None, str(e))
+        
+        # Run the async verification
+        if loop.is_running():
+            # If loop is already running, create a new one
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(lambda: asyncio.run(_verify()))
+                return future.result(timeout=10)
+        else:
+            return loop.run_until_complete(_verify())
+            
+    except Exception as e:
+        logger.error(f"Token verification error: {e}")
+        return (False, None, str(e))
+
 def add_client_bot_request(bot_token: str, owner_id: int, owner_username: str, owner_name: str) -> tuple:
     """Add a new client bot request (pending approval)"""
     conn = sqlite3.connect('bot_users.db')
@@ -50,15 +83,11 @@ def add_client_bot_request(bot_token: str, owner_id: int, owner_username: str, o
         if existing:
             return (False, "Bot token already registered", None)
         
-        # Verify token by creating bot instance
-        try:
-            bot = Bot(token=bot_token)
-            bot_info = asyncio.run(bot.get_me())
-            bot_username = bot_info.username
-            bot_first_name = bot_info.first_name
-        except Exception as e:
-            logger.error(f"Invalid bot token: {e}")
-            return (False, f"Invalid bot token: {str(e)[:50]}", None)
+        # Verify token
+        success, bot_username, bot_first_name = verify_bot_token(bot_token)
+        if not success:
+            error_msg = str(bot_first_name)[:100] if bot_first_name else "Invalid token"
+            return (False, f"Invalid bot token: {error_msg}", None)
         
         # Insert new bot request
         c.execute('''INSERT INTO client_bots 
