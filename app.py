@@ -42,10 +42,8 @@ bot_running = False
 SUPPORTED_LANGS = {"en": "English", "hi": "Hindi", "hinglish": "Hinglish"}
 SUPPORTED_PERSONAS = ["hackGPT", "DAN", "chatGPT-DEV"]
 
-# Admin IDs
 ADMIN_IDS = [5451167865, 1529815801]
 
-# Database setup - PostgreSQL or SQLite fallback
 USE_POSTGRES = DATABASE_URL and DATABASE_URL.startswith('postgres')
 
 if USE_POSTGRES:
@@ -73,7 +71,7 @@ if USE_POSTGRES:
         conn.close()
 else:
     import sqlite3
-    logger.info("Using SQLite database (fallback)")
+    logger.info("Using SQLite database")
     
     def get_db():
         return sqlite3.connect('bot_users.db')
@@ -227,10 +225,10 @@ def get_ai_response_sync(prompt: str, persona: str = "hackGPT") -> str:
             return data.get('response') or data.get('answer') or 'No response received'
         return f"API Error {response.status_code}"
     except requests.exceptions.Timeout:
-        return "⏱️ Request timeout. Server busy hai."
+        return "Request timeout. Server busy hai."
     except Exception as e:
         logger.error(f"API error: {e}")
-        return f"❌ Error: {str(e)[:100]}"
+        return f"Error: {str(e)[:100]}"
 
 def ensure_defaults(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault('persona', 'hackGPT')
@@ -275,16 +273,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_or_update_user(user)
         
         if is_user_banned(user.id):
-            await update.message.reply_text("❌ You are banned from using this bot.")
+            await update.message.reply_text("You are banned from using this bot.")
             return
             
         ensure_defaults(context)
         welcome = (
-            f"🤖 Welcome {user.first_name}!\n\n"
+            f"Welcome {user.first_name}!\n\n"
             "Main HackGPT Bot hu!\n\n"
-            "Buttons se settings change karo (persona/language).\n\n"
+            "Buttons se settings change karo.\n\n"
             f"{status_text(context)}\n\n"
-            "Just message karo! 🚀"
+            "Just message karo!"
         )
         await update.message.reply_text(welcome, reply_markup=main_menu_keyboard())
     except Exception as e:
@@ -293,31 +291,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if is_user_banned(user.id):
-        await update.message.reply_text("❌ You are banned from using this bot.")
+        await update.message.reply_text("You are banned.")
         return
         
     ensure_defaults(context)
-    text = (
-        "📚 Help\n\n"
-        "Commands:\n"
-        "/start\n/help\n/persona [hackGPT|DAN|chatGPT-DEV]\n/lang [en|hi|hinglish]\n/reset\n\n"
-        "Tip: /start pe buttons milenge."
-    )
+    text = "Help\n\nCommands:\n/start\n/help\n/persona\n/lang\n/reset"
     if is_admin(user.id):
-        text += "\n\n🔑 Admin Commands:\n/adminstats\n/userlist\n/userinfo <user_id>\n/broadcast <message>\n/ban <user_id>\n/unban <user_id>"
+        text += "\n\nAdmin:\n/adminstats\n/userlist\n/userinfo\n/broadcast\n/ban\n/unban"
     await update.message.reply_text(text, reply_markup=main_menu_keyboard())
 
 async def set_persona(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if is_user_banned(user.id):
-        await update.message.reply_text("❌ You are banned from using this bot.")
+        await update.message.reply_text("You are banned.")
         return
         
     ensure_defaults(context)
     if context.args:
         persona = ' '.join(context.args)
         context.user_data['persona'] = persona
-        await update.message.reply_text(f"✅ Persona: {persona}", reply_markup=main_menu_keyboard())
+        await update.message.reply_text(f"Persona: {persona}", reply_markup=main_menu_keyboard())
     else:
         current = context.user_data.get('persona', 'hackGPT')
         await update.message.reply_text("Select persona:\n\n" + status_text(context),
@@ -326,17 +319,17 @@ async def set_persona(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if is_user_banned(user.id):
-        await update.message.reply_text("❌ You are banned from using this bot.")
+        await update.message.reply_text("You are banned.")
         return
         
     ensure_defaults(context)
     if context.args:
         lang = context.args[0].strip().lower()
         if lang not in SUPPORTED_LANGS:
-            await update.message.reply_text("❌ Invalid language. Use: /lang en | hi | hinglish")
+            await update.message.reply_text("Invalid language")
             return
         context.user_data['lang'] = lang
-        await update.message.reply_text(f"✅ Language set to: {SUPPORTED_LANGS[lang]}",
+        await update.message.reply_text(f"Language: {SUPPORTED_LANGS[lang]}",
                                         reply_markup=main_menu_keyboard())
     else:
         current = context.user_data.get('lang', 'hinglish')
@@ -346,7 +339,7 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def reset_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if is_user_banned(user.id):
-        await update.message.reply_text("❌ You are banned from using this bot.")
+        await update.message.reply_text("You are banned.")
         return
         
     ensure_defaults(context)
@@ -355,40 +348,39 @@ async def reset_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data['persona'] = persona
     context.user_data['lang'] = lang
-    await update.message.reply_text("🔄 Reset!", reply_markup=main_menu_keyboard())
+    await update.message.reply_text("Reset!", reply_markup=main_menu_keyboard())
 
-# Admin commands
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
-        await update.message.reply_text("❌ Admin access required.")
+        await update.message.reply_text("Admin access required.")
         return
     
     total, active, messages = get_stats()
     db_type = "PostgreSQL" if USE_POSTGRES else "SQLite"
     text = (
-        f"📊 Bot Statistics ({db_type})\n\n"
-        f"👥 Total Users: {total}\n"
-        f"✅ Active Users: {active}\n"
-        f"🚫 Banned Users: {total - active}\n"
-        f"💬 Total Messages: {messages}"
+        f"Bot Statistics ({db_type})\n\n"
+        f"Total Users: {total}\n"
+        f"Active Users: {active}\n"
+        f"Banned Users: {total - active}\n"
+        f"Total Messages: {messages}"
     )
     await update.message.reply_text(text)
 
 async def user_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
-        await update.message.reply_text("❌ Admin access required.")
+        await update.message.reply_text("Admin access required.")
         return
     
     users = get_all_users()
     if not users:
-        await update.message.reply_text("👥 No users yet.")
+        await update.message.reply_text("No users yet.")
         return
     
-    text = "👥 User List\n\n"
-    for u in users[:20]:  # First 20 users
-        status = "🚫" if u[6] else "✅"
+    text = "User List\n\n"
+    for u in users[:20]:
+        status = "Banned" if u[6] else "Active"
         text += f"{status} {u[0]} - {u[2]} (@{u[1] or 'none'})\nJoined: {u[3]}\nMessages: {u[4]}\n\n"
     
     if len(users) > 20:
@@ -399,26 +391,26 @@ async def user_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def user_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
-        await update.message.reply_text("❌ Admin access required.")
+        await update.message.reply_text("Admin access required.")
         return
     
     if not context.args:
-        await update.message.reply_text("❌ Usage: /userinfo <user_id>")
+        await update.message.reply_text("Usage: /userinfo <user_id>")
         return
     
     try:
         target_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("❌ Invalid user ID.")
+        await update.message.reply_text("Invalid user ID.")
         return
     
     info = get_user_info(target_id)
     if not info:
-        await update.message.reply_text("❌ User not found.")
+        await update.message.reply_text("User not found.")
         return
     
     text = (
-        f"👤 User Info\n\n"
+        f"User Info\n\n"
         f"ID: {info[0]}\n"
         f"Username: @{info[1] or 'none'}\n"
         f"Name: {info[2]} {info[3] or ''}\n"
@@ -432,11 +424,11 @@ async def user_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
-        await update.message.reply_text("❌ Admin access required.")
+        await update.message.reply_text("Admin access required.")
         return
     
     if not context.args:
-        await update.message.reply_text("❌ Usage: /broadcast <message>")
+        await update.message.reply_text("Usage: /broadcast <message>")
         return
     
     message = ' '.join(context.args)
@@ -445,62 +437,62 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     failed = 0
     
     for u in users:
-        if u[6] == 0:  # Not banned
+        if u[6] == 0:
             try:
-                await context.bot.send_message(chat_id=u[0], text=f"📢 Broadcast\n\n{message}")
+                await context.bot.send_message(chat_id=u[0], text=f"Broadcast\n\n{message}")
                 success += 1
             except Exception as e:
                 logger.error(f"Broadcast error for {u[0]}: {e}")
                 failed += 1
     
-    await update.message.reply_text(f"✅ Broadcast sent!\nSuccess: {success}\nFailed: {failed}")
+    await update.message.reply_text(f"Broadcast sent!\nSuccess: {success}\nFailed: {failed}")
 
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
-        await update.message.reply_text("❌ Admin access required.")
+        await update.message.reply_text("Admin access required.")
         return
     
     if not context.args:
-        await update.message.reply_text("❌ Usage: /ban <user_id>")
+        await update.message.reply_text("Usage: /ban <user_id>")
         return
     
     try:
         target_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("❌ Invalid user ID.")
+        await update.message.reply_text("Invalid user ID.")
         return
     
     if target_id in ADMIN_IDS:
-        await update.message.reply_text("❌ Cannot ban admin.")
+        await update.message.reply_text("Cannot ban admin.")
         return
     
     ban_user(target_id)
-    await update.message.reply_text(f"✅ User {target_id} banned.")
+    await update.message.reply_text(f"User {target_id} banned.")
 
 async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
-        await update.message.reply_text("❌ Admin access required.")
+        await update.message.reply_text("Admin access required.")
         return
     
     if not context.args:
-        await update.message.reply_text("❌ Usage: /unban <user_id>")
+        await update.message.reply_text("Usage: /unban <user_id>")
         return
     
     try:
         target_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("❌ Invalid user ID.")
+        await update.message.reply_text("Invalid user ID.")
         return
     
     unban_user(target_id)
-    await update.message.reply_text(f"✅ User {target_id} unbanned.")
+    await update.message.reply_text(f"User {target_id} unbanned.")
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.callback_query.from_user
     if is_user_banned(user.id):
-        await update.callback_query.answer("❌ You are banned.", show_alert=True)
+        await update.callback_query.answer("You are banned.", show_alert=True)
         return
         
     ensure_defaults(context)
@@ -509,30 +501,134 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data or ""
 
     if data == "menu:main":
-        await q.edit_message_text("Main menu:\n\n" + status_text(context), reply_markup=main_menu_keyboard()); return
+        await q.edit_message_text("Main menu:\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+        return
     if data == "menu:persona":
         cur = context.user_data.get('persona', 'hackGPT')
-        await q.edit_message_text("Select persona:\n\n" + status_text(context), reply_markup=persona_keyboard(cur)); return
+        await q.edit_message_text("Select persona:\n\n" + status_text(context), reply_markup=persona_keyboard(cur))
+        return
     if data == "menu:lang":
         cur = context.user_data.get('lang', 'hinglish')
-        await q.edit_message_text("Select language:\n\n" + status_text(context), reply_markup=lang_keyboard(cur)); return
+        await q.edit_message_text("Select language:\n\n" + status_text(context), reply_markup=lang_keyboard(cur))
+        return
     if data == "menu:help":
-        await q.edit_message_text("📚 Help\n\nUse buttons or commands:\n/start /help /persona /lang /reset\n\n" + status_text(context),
-                                  reply_markup=main_menu_keyboard()); return
+        await q.edit_message_text("Help\n\nUse buttons or commands" + status_text(context), reply_markup=main_menu_keyboard())
+        return
     if data == "menu:reset":
         persona = context.user_data.get('persona', 'hackGPT')
         lang = context.user_data.get('lang', 'hinglish')
         context.user_data.clear()
         context.user_data['persona'] = persona
         context.user_data['lang'] = lang
-        await q.edit_message_text("🔄 Reset done!\n\n" + status_text(context), reply_markup=main_menu_keyboard()); return
+        await q.edit_message_text("Reset done!\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+        return
 
     if data.startswith("persona:"):
         p = data.split(":", 1)[1]
         context.user_data['persona'] = p
-        await q.edit_message_text(f"✅ Persona set to: {p}\n\n" + status_text(context), reply_markup=main_menu_keyboard()); return
+        await q.edit_message_text(f"Persona set to: {p}\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+        return
 
     if data.startswith("lang:"):
         l = data.split(":", 1)[1]
         if l in SUPPORTED_LANGS:
-            context.user_data['l
+            context.user_data['lang'] = l
+            await q.edit_message_text(f"Language set to: {SUPPORTED_LANGS[l]}\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+        else:
+            await q.edit_message_text("Invalid language\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+        return
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    add_or_update_user(user)
+    
+    if is_user_banned(user.id):
+        await update.message.reply_text("You are banned.")
+        return
+    
+    increment_message_count(user.id)
+    ensure_defaults(context)
+    text = update.message.text
+    if not text:
+        return
+    persona = context.user_data.get('persona', 'hackGPT')
+    lang = context.user_data.get('lang', 'hinglish')
+
+    try:
+        await update.message.chat.send_action('typing')
+    except:
+        pass
+
+    prompt = build_prompt(text, lang)
+    resp = get_ai_response_sync(prompt, persona)
+
+    if len(resp) > 4096:
+        for i in range(0, len(resp), 4096):
+            await update.message.reply_text(resp[i:i+4096], reply_markup=main_menu_keyboard())
+    else:
+        await update.message.reply_text(resp, reply_markup=main_menu_keyboard())
+
+async def error_handler(update, context):
+    logger.error(f"Error: {context.error}")
+
+async def setup_application():
+    global application
+    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "dummy_token":
+        logger.error("TELEGRAM_BOT_TOKEN not configured!")
+        return None
+
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("persona", set_persona))
+    application.add_handler(CommandHandler("lang", set_language))
+    application.add_handler(CommandHandler("reset", reset_chat))
+    application.add_handler(CommandHandler("adminstats", admin_stats))
+    application.add_handler(CommandHandler("userlist", user_list))
+    application.add_handler(CommandHandler("userinfo", user_info_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("ban", ban_command))
+    application.add_handler(CommandHandler("unban", unban_command))
+    application.add_handler(CallbackQueryHandler(on_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_error_handler(error_handler)
+    return application
+
+async def run_polling():
+    global application, bot_running
+    application = await setup_application()
+    if not application:
+        return
+
+    bot_running = True
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    logger.info("Bot started!")
+    await asyncio.Event().wait()
+
+import threading
+def run_bot_in_thread():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(run_polling())
+
+@app.route('/', methods=['GET'])
+def index():
+    return jsonify({"status": "running" if bot_running else "starting", "message": "HackGPT Bot Active!"}), 200
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"ok": True}), 200
+
+@app.before_request
+def startup():
+    global bot_thread
+    if bot_thread is None:
+        bot_thread = threading.Thread(target=run_bot_in_thread, daemon=True)
+        bot_thread.start()
+
+bot_thread = None
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
