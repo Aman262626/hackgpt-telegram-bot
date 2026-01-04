@@ -8,8 +8,8 @@ import bot_manager
 
 logger = logging.getLogger(__name__)
 
-# Admin IDs
-ADMIN_IDS = [7827293530]
+# Admin IDs - UPDATED
+ADMIN_IDS = [5451167865, 1529815801]
 
 async def enhanced_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show enhanced admin panel with all features"""
