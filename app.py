@@ -19,6 +19,9 @@ from telegram.ext import (
     ContextTypes,
 )
 
+# Import bot manager
+import bot_manager
+
 load_dotenv()
 
 logging.basicConfig(
@@ -100,6 +103,7 @@ if not USE_POSTGRES:
         conn.close()
 
 init_db()
+bot_manager.init_client_bots_db()
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
@@ -262,7 +266,16 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Statistics", callback_data="admin:stats"),
          InlineKeyboardButton("👥 User List", callback_data="admin:users")],
+        [InlineKeyboardButton("🤖 Client Bots", callback_data="admin:clientbots")],
         [InlineKeyboardButton("⬅️ Back", callback_data="menu:main")],
+    ])
+
+def client_bots_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Bot Stats", callback_data="clientbots:stats"),
+         InlineKeyboardButton("📋 Bot List", callback_data="clientbots:list")],
+        [InlineKeyboardButton("⏳ Pending Approvals", callback_data="clientbots:pending")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="menu:admin")],
     ])
 
 def persona_keyboard(current: str) -> InlineKeyboardMarkup:
@@ -329,7 +342,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/userinfo <id> - User details\n"
             "/broadcast <msg> - Send to all\n"
             "/ban <id> - Ban user\n"
-            "/unban <id> - Unban user"
+            "/unban <id> - Unban user\n"
+            "\n🤖 Multi-Bot Management:\n"
+            "/addbot <token> - Add client bot\n"
+            "/listbots - List all client bots\n"
+            "/approvebot <id> - Approve bot\n"
+            "/enablebot <id> - Enable bot\n"
+            "/disablebot <id> - Disable bot\n"
+            "/deletebot <id> - Delete bot\n"
+            "/botinfo <id> - Bot details"
         )
     await update.message.reply_text(text, reply_markup=main_menu_keyboard(is_admin(user.id)))
 
@@ -522,6 +543,222 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     unban_user(target_id)
     await update.message.reply_text(f"✅ User {target_id} unbanned.")
 
+# ========== MULTI-BOT MANAGEMENT COMMANDS ==========
+
+async def addbot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("Admin access required.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: /addbot <bot_token>\n\nExample:\n/addbot 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11")
+        return
+    
+    bot_token = context.args[0].strip()
+    success, message, bot_id = bot_manager.add_client_bot_request(
+        bot_token, user.id, user.username or 'none', user.first_name
+    )
+    
+    if success:
+        await update.message.reply_text(f"✅ {message}\nBot ID: {bot_id}\n\nUse /approvebot {bot_id} to approve and activate.")
+    else:
+        await update.message.reply_text(f"❌ {message}")
+
+async def listbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("Admin access required.")
+        return
+    
+    bots = bot_manager.get_all_client_bots()
+    if not bots:
+        await update.message.reply_text("🤖 No client bots registered yet.")
+        return
+    
+    text = "🤖 Client Bots List\n\n"
+    for b in bots[:15]:
+        status = "✅" if b[5] else "❌"
+        approved = "✔️" if b[6] else "⏳"
+        running = "🟢" if bot_manager.is_bot_running(b[0]) else "🔴"
+        text += f"{running} {status} Bot ID: {b[0]}\n@{b[1]} ({b[2]})\nOwner: {b[4]} (@{b[3]})\nApproved: {approved} | Users: {b[7]} | Msgs: {b[8]}\n\n"
+    
+    if len(bots) > 15:
+        text += f"... and {len(bots) - 15} more bots."
+    
+    await update.message.reply_text(text)
+
+async def approvebot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("Admin access required.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: /approvebot <bot_id>")
+        return
+    
+    try:
+        bot_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid bot ID.")
+        return
+    
+    success, message = bot_manager.approve_client_bot(bot_id)
+    if success:
+        await update.message.reply_text(f"✅ {message}\n\nUse /enablebot {bot_id} to start the bot.")
+    else:
+        await update.message.reply_text(f"❌ {message}")
+
+async def enablebot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("Admin access required.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: /enablebot <bot_id>")
+        return
+    
+    try:
+        bot_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid bot ID.")
+        return
+    
+    # Enable in database
+    success, message = bot_manager.enable_client_bot(bot_id)
+    if not success:
+        await update.message.reply_text(f"❌ {message}")
+        return
+    
+    # Start the bot
+    bot_data = bot_manager.get_client_bot(bot_id)
+    if not bot_data:
+        await update.message.reply_text("❌ Bot not found")
+        return
+    
+    await update.message.reply_text("⏳ Starting bot...")
+    
+    def setup_client_handlers(app, client_bot_id):
+        """Setup handlers for client bot"""
+        # Same handlers as main bot but for client
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("help", help_command))
+        app.add_handler(CommandHandler("persona", set_persona))
+        app.add_handler(CommandHandler("lang", set_language))
+        app.add_handler(CommandHandler("reset", reset_chat))
+        app.add_handler(CallbackQueryHandler(on_callback))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app.add_error_handler(error_handler)
+    
+    success, msg = await bot_manager.start_client_bot(bot_id, bot_data['bot_token'], setup_client_handlers)
+    if success:
+        await update.message.reply_text(f"✅ Bot @{bot_data['bot_username']} is now running!")
+    else:
+        await update.message.reply_text(f"❌ Failed to start bot: {msg}")
+
+async def disablebot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("Admin access required.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: /disablebot <bot_id>")
+        return
+    
+    try:
+        bot_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid bot ID.")
+        return
+    
+    # Stop the bot if running
+    if bot_manager.is_bot_running(bot_id):
+        await update.message.reply_text("⏳ Stopping bot...")
+        success, msg = await bot_manager.stop_client_bot(bot_id)
+        if not success:
+            await update.message.reply_text(f"⚠️ Warning: {msg}")
+    
+    # Disable in database
+    success, message = bot_manager.disable_client_bot(bot_id)
+    if success:
+        await update.message.reply_text(f"✅ {message}")
+    else:
+        await update.message.reply_text(f"❌ {message}")
+
+async def deletebot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("Admin access required.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: /deletebot <bot_id>")
+        return
+    
+    try:
+        bot_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid bot ID.")
+        return
+    
+    # Stop if running
+    if bot_manager.is_bot_running(bot_id):
+        await bot_manager.stop_client_bot(bot_id)
+    
+    # Delete from database
+    success, message = bot_manager.delete_client_bot(bot_id)
+    if success:
+        await update.message.reply_text(f"✅ {message}")
+    else:
+        await update.message.reply_text(f"❌ {message}")
+
+async def botinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("Admin access required.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: /botinfo <bot_id>")
+        return
+    
+    try:
+        bot_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid bot ID.")
+        return
+    
+    bot_data = bot_manager.get_client_bot(bot_id)
+    if not bot_data:
+        await update.message.reply_text("❌ Bot not found")
+        return
+    
+    running = "🟢 Running" if bot_manager.is_bot_running(bot_id) else "🔴 Stopped"
+    approved = "✔️ Approved" if bot_data['is_approved'] else "⏳ Pending"
+    active = "✅ Active" if bot_data['is_active'] else "❌ Inactive"
+    
+    text = (
+        f"🤖 Bot Info\n\n"
+        f"Bot ID: {bot_data['bot_id']}\n"
+        f"Username: @{bot_data['bot_username']}\n"
+        f"Name: {bot_data['bot_first_name']}\n"
+        f"Owner: {bot_data['owner_name']} (@{bot_data['owner_username']})\n"
+        f"Owner ID: {bot_data['owner_user_id']}\n"
+        f"Created: {bot_data['created_date']}\n"
+        f"Status: {running}\n"
+        f"Approved: {approved}\n"
+        f"Active: {active}\n"
+        f"Total Users: {bot_data['total_users']}\n"
+        f"Total Messages: {bot_data['total_messages']}\n"
+        f"Last Active: {bot_data['last_active'] or 'Never'}"
+    )
+    await update.message.reply_text(text)
+
+# ========== END MULTI-BOT COMMANDS ==========
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.callback_query.from_user
     if is_user_banned(user.id):
@@ -598,6 +835,57 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"... and {len(users) - 10} more.\nUse /userlist for full list."
         await q.edit_message_text(text, reply_markup=admin_keyboard())
         return
+    if data == "admin:clientbots":
+        if not is_admin_user:
+            await q.answer("Admin access required", show_alert=True)
+            return
+        await q.edit_message_text("🤖 Client Bots Management\n\nSelect option:", reply_markup=client_bots_keyboard())
+        return
+    if data == "clientbots:stats":
+        if not is_admin_user:
+            await q.answer("Admin access required", show_alert=True)
+            return
+        stats = bot_manager.get_client_bot_stats()
+        text = (
+            "📊 Client Bots Statistics\n\n"
+            f"🤖 Total Bots: {stats['total_bots']}\n"
+            f"✅ Active Bots: {stats['active_bots']}\n"
+            f"⏳ Pending Approvals: {stats['pending_approvals']}\n"
+            f"👥 Total Users: {stats['total_users']}\n"
+            f"💬 Total Messages: {stats['total_messages']}"
+        )
+        await q.edit_message_text(text, reply_markup=client_bots_keyboard())
+        return
+    if data == "clientbots:list":
+        if not is_admin_user:
+            await q.answer("Admin access required", show_alert=True)
+            return
+        bots = bot_manager.get_all_client_bots()
+        if not bots:
+            await q.edit_message_text("🤖 No client bots yet.", reply_markup=client_bots_keyboard())
+            return
+        text = "🤖 Client Bots (Top 5)\n\n"
+        for b in bots[:5]:
+            status = "✅" if b[5] else "❌"
+            running = "🟢" if bot_manager.is_bot_running(b[0]) else "🔴"
+            text += f"{running} {status} ID:{b[0]} @{b[1]}\nOwner: @{b[3]}\n\n"
+        text += "\nUse /listbots for full list"
+        await q.edit_message_text(text, reply_markup=client_bots_keyboard())
+        return
+    if data == "clientbots:pending":
+        if not is_admin_user:
+            await q.answer("Admin access required", show_alert=True)
+            return
+        pending = bot_manager.get_pending_approvals()
+        if not pending:
+            await q.edit_message_text("✅ No pending approvals", reply_markup=client_bots_keyboard())
+            return
+        text = "⏳ Pending Approvals\n\n"
+        for p in pending[:5]:
+            text += f"ID: {p[0]} - @{p[1]}\nOwner: {p[4]} (@{p[3]})\nDate: {p[5]}\n\n"
+        text += f"\nUse /approvebot <id> to approve"
+        await q.edit_message_text(text, reply_markup=client_bots_keyboard())
+        return
 
     if data.startswith("persona:"):
         p = data.split(":", 1)[1]
@@ -665,6 +953,16 @@ async def setup_application():
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CommandHandler("ban", ban_command))
     application.add_handler(CommandHandler("unban", unban_command))
+    
+    # Multi-bot management commands
+    application.add_handler(CommandHandler("addbot", addbot_command))
+    application.add_handler(CommandHandler("listbots", listbots_command))
+    application.add_handler(CommandHandler("approvebot", approvebot_command))
+    application.add_handler(CommandHandler("enablebot", enablebot_command))
+    application.add_handler(CommandHandler("disablebot", disablebot_command))
+    application.add_handler(CommandHandler("deletebot", deletebot_command))
+    application.add_handler(CommandHandler("botinfo", botinfo_command))
+    
     application.add_handler(CallbackQueryHandler(on_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_error_handler(error_handler)
@@ -684,6 +982,7 @@ async def run_polling():
     await application.start()
     await application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
     logger.info("Bot started successfully!")
+    logger.info("Multi-Bot Management System initialized!")
     await asyncio.Event().wait()
 
 def run_bot_in_thread():
@@ -693,7 +992,13 @@ def run_bot_in_thread():
 
 @app.route('/', methods=['GET'])
 def index():
-    return jsonify({"status": "running" if bot_running else "starting", "message": "HackGPT Bot Active!"}), 200
+    stats = bot_manager.get_client_bot_stats()
+    return jsonify({
+        "status": "running" if bot_running else "starting", 
+        "message": "HackGPT Multi-Bot System Active!",
+        "client_bots": stats['total_bots'],
+        "active_bots": stats['active_bots']
+    }), 200
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -711,4 +1016,5 @@ bot_thread = None
 
 if __name__ == '__main__':
     logger.info(f"Starting Flask on port {PORT}")
+    logger.info("Multi-Bot Management System ready!")
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
