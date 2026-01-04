@@ -3,7 +3,6 @@ import os
 import logging
 import requests
 import asyncio
-import sqlite3
 from datetime import datetime
 from flask import Flask, jsonify
 from dotenv import load_dotenv
@@ -29,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CUSTOM_API_URL = os.getenv('CUSTOM_API_URL', 'https://hackgpt-backend.onrender.com')
+DATABASE_URL = os.getenv('DATABASE_URL')
 PORT = int(os.getenv('PORT', 10000))
 
 if not TELEGRAM_TOKEN:
@@ -45,69 +45,124 @@ SUPPORTED_PERSONAS = ["hackGPT", "DAN", "chatGPT-DEV"]
 # Admin IDs
 ADMIN_IDS = [5451167865, 1529815801]
 
-# Database setup
-def init_db():
-    conn = sqlite3.connect('bot_users.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        first_name TEXT,
-        last_name TEXT,
-        join_date TEXT,
-        message_count INTEGER DEFAULT 0,
-        last_active TEXT,
-        is_banned INTEGER DEFAULT 0
-    )''')
-    conn.commit()
-    conn.close()
+# Database setup - PostgreSQL or SQLite fallback
+USE_POSTGRES = DATABASE_URL and DATABASE_URL.startswith('postgres')
+
+if USE_POSTGRES:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    logger.info("Using PostgreSQL database")
+    
+    def get_db():
+        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    
+    def init_db():
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            join_date TIMESTAMP,
+            message_count INTEGER DEFAULT 0,
+            last_active TIMESTAMP,
+            is_banned INTEGER DEFAULT 0
+        )''')
+        conn.commit()
+        conn.close()
+else:
+    import sqlite3
+    logger.info("Using SQLite database (fallback)")
+    
+    def get_db():
+        return sqlite3.connect('bot_users.db')
+    
+    def init_db():
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            join_date TEXT,
+            message_count INTEGER DEFAULT 0,
+            last_active TEXT,
+            is_banned INTEGER DEFAULT 0
+        )''')
+        conn.commit()
+        conn.close()
 
 init_db()
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
-def get_db():
-    return sqlite3.connect('bot_users.db')
-
 def add_or_update_user(user):
     conn = get_db()
     c = conn.cursor()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    c.execute('''INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, join_date, last_active)
-                 VALUES (?, ?, ?, ?, ?, ?)''',
-              (user.id, user.username or '', user.first_name or '', user.last_name or '', now, now))
-    c.execute('UPDATE users SET last_active = ?, username = ?, first_name = ?, last_name = ? WHERE user_id = ?',
-              (now, user.username or '', user.first_name or '', user.last_name or '', user.id))
+    now = datetime.now()
+    
+    if USE_POSTGRES:
+        c.execute('''INSERT INTO users (user_id, username, first_name, last_name, join_date, last_active)
+                     VALUES (%s, %s, %s, %s, %s, %s)
+                     ON CONFLICT (user_id) DO UPDATE
+                     SET last_active = %s, username = %s, first_name = %s, last_name = %s''',
+                  (user.id, user.username or '', user.first_name or '', user.last_name or '', now, now,
+                   now, user.username or '', user.first_name or '', user.last_name or ''))
+    else:
+        now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+        c.execute('''INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, join_date, last_active)
+                     VALUES (?, ?, ?, ?, ?, ?)''',
+                  (user.id, user.username or '', user.first_name or '', user.last_name or '', now_str, now_str))
+        c.execute('UPDATE users SET last_active = ?, username = ?, first_name = ?, last_name = ? WHERE user_id = ?',
+                  (now_str, user.username or '', user.first_name or '', user.last_name or '', user.id))
+    
     conn.commit()
     conn.close()
 
 def increment_message_count(user_id: int):
     conn = get_db()
     c = conn.cursor()
-    c.execute('UPDATE users SET message_count = message_count + 1 WHERE user_id = ?', (user_id,))
+    if USE_POSTGRES:
+        c.execute('UPDATE users SET message_count = message_count + 1 WHERE user_id = %s', (user_id,))
+    else:
+        c.execute('UPDATE users SET message_count = message_count + 1 WHERE user_id = ?', (user_id,))
     conn.commit()
     conn.close()
 
 def is_user_banned(user_id: int) -> bool:
     conn = get_db()
     c = conn.cursor()
-    c.execute('SELECT is_banned FROM users WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()
-    return result and result[0] == 1
+    if USE_POSTGRES:
+        c.execute('SELECT is_banned FROM users WHERE user_id = %s', (user_id,))
+        result = c.fetchone()
+        conn.close()
+        return result and result['is_banned'] == 1
+    else:
+        c.execute('SELECT is_banned FROM users WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        conn.close()
+        return result and result[0] == 1
 
 def ban_user(user_id: int):
     conn = get_db()
     c = conn.cursor()
-    c.execute('UPDATE users SET is_banned = 1 WHERE user_id = ?', (user_id,))
+    if USE_POSTGRES:
+        c.execute('UPDATE users SET is_banned = 1 WHERE user_id = %s', (user_id,))
+    else:
+        c.execute('UPDATE users SET is_banned = 1 WHERE user_id = ?', (user_id,))
     conn.commit()
     conn.close()
 
 def unban_user(user_id: int):
     conn = get_db()
     c = conn.cursor()
-    c.execute('UPDATE users SET is_banned = 0 WHERE user_id = ?', (user_id,))
+    if USE_POSTGRES:
+        c.execute('UPDATE users SET is_banned = 0 WHERE user_id = %s', (user_id,))
+    else:
+        c.execute('UPDATE users SET is_banned = 0 WHERE user_id = ?', (user_id,))
     conn.commit()
     conn.close()
 
@@ -117,27 +172,41 @@ def get_all_users():
     c.execute('SELECT user_id, username, first_name, join_date, message_count, last_active, is_banned FROM users')
     users = c.fetchall()
     conn.close()
+    
+    if USE_POSTGRES:
+        return [(u['user_id'], u['username'], u['first_name'], str(u['join_date']), u['message_count'], str(u['last_active']), u['is_banned']) for u in users]
     return users
 
 def get_user_info(user_id: int):
     conn = get_db()
     c = conn.cursor()
-    c.execute('SELECT user_id, username, first_name, last_name, join_date, message_count, last_active, is_banned FROM users WHERE user_id = ?', (user_id,))
-    user = c.fetchone()
-    conn.close()
-    return user
+    if USE_POSTGRES:
+        c.execute('SELECT user_id, username, first_name, last_name, join_date, message_count, last_active, is_banned FROM users WHERE user_id = %s', (user_id,))
+        user = c.fetchone()
+        conn.close()
+        if user:
+            return (user['user_id'], user['username'], user['first_name'], user['last_name'], str(user['join_date']), user['message_count'], str(user['last_active']), user['is_banned'])
+        return None
+    else:
+        c.execute('SELECT user_id, username, first_name, last_name, join_date, message_count, last_active, is_banned FROM users WHERE user_id = ?', (user_id,))
+        user = c.fetchone()
+        conn.close()
+        return user
 
 def get_stats():
     conn = get_db()
     c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM users')
-    total_users = c.fetchone()[0]
-    c.execute('SELECT COUNT(*) FROM users WHERE is_banned = 0')
-    active_users = c.fetchone()[0]
-    c.execute('SELECT SUM(message_count) FROM users')
-    total_messages = c.fetchone()[0] or 0
+    c.execute('SELECT COUNT(*) as total FROM users')
+    total_users = c.fetchone()
+    c.execute('SELECT COUNT(*) as active FROM users WHERE is_banned = 0')
+    active_users = c.fetchone()
+    c.execute('SELECT SUM(message_count) as total_msgs FROM users')
+    total_messages = c.fetchone()
     conn.close()
-    return total_users, active_users, total_messages
+    
+    if USE_POSTGRES:
+        return total_users['total'], active_users['active'], total_messages['total_msgs'] or 0
+    return total_users[0], active_users[0], total_messages[0] or 0
 
 def build_prompt(user_text: str, lang: str) -> str:
     if lang == "hi":
@@ -296,8 +365,9 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     total, active, messages = get_stats()
+    db_type = "PostgreSQL" if USE_POSTGRES else "SQLite"
     text = (
-        "📊 Bot Statistics\n\n"
+        f"📊 Bot Statistics ({db_type})\n\n"
         f"👥 Total Users: {total}\n"
         f"✅ Active Users: {active}\n"
         f"🚫 Banned Users: {total - active}\n"
@@ -465,103 +535,4 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("lang:"):
         l = data.split(":", 1)[1]
         if l in SUPPORTED_LANGS:
-            context.user_data['lang'] = l
-            await q.edit_message_text(f"✅ Language set to: {SUPPORTED_LANGS[l]}\n\n" + status_text(context),
-                                      reply_markup=main_menu_keyboard())
-        else:
-            await q.edit_message_text("❌ Invalid language\n\n" + status_text(context), reply_markup=main_menu_keyboard())
-        return
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    add_or_update_user(user)
-    
-    if is_user_banned(user.id):
-        await update.message.reply_text("❌ You are banned from using this bot.")
-        return
-    
-    increment_message_count(user.id)
-    ensure_defaults(context)
-    text = update.message.text
-    if not text: return
-    persona = context.user_data.get('persona', 'hackGPT')
-    lang = context.user_data.get('lang', 'hinglish')
-
-    try: await update.message.chat.send_action('typing')
-    except: pass
-
-    prompt = build_prompt(text, lang)
-    resp = get_ai_response_sync(prompt, persona)
-
-    if len(resp) > 4096:
-        for i in range(0, len(resp), 4096):
-            await update.message.reply_text(resp[i:i+4096], reply_markup=main_menu_keyboard())
-    else:
-        await update.message.reply_text(resp, reply_markup=main_menu_keyboard())
-
-async def error_handler(update, context):
-    logger.error(f"Error: {context.error}")
-
-async def setup_application():
-    global application
-    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "dummy_token":
-        logger.error("TELEGRAM_BOT_TOKEN not configured!")
-        return None
-
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("persona", set_persona))
-    application.add_handler(CommandHandler("lang", set_language))
-    application.add_handler(CommandHandler("reset", reset_chat))
-    
-    # Admin commands
-    application.add_handler(CommandHandler("adminstats", admin_stats))
-    application.add_handler(CommandHandler("userlist", user_list))
-    application.add_handler(CommandHandler("userinfo", user_info_command))
-    application.add_handler(CommandHandler("broadcast", broadcast_command))
-    application.add_handler(CommandHandler("ban", ban_command))
-    application.add_handler(CommandHandler("unban", unban_command))
-    
-    application.add_handler(CallbackQueryHandler(on_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_error_handler(error_handler)
-    return application
-
-async def run_polling():
-    global application, bot_running
-    application = await setup_application()
-    if not application: return
-
-    bot_running = True
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-    logger.info("✅ Bot polling started!")
-    await asyncio.Event().wait()
-
-import threading
-def run_bot_in_thread():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(run_polling())
-
-@app.route('/', methods=['GET'])
-def index():
-    return jsonify({"status": "running" if bot_running else "starting", "message": "HackGPT Bot Active!"}), 200
-
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({"ok": True}), 200
-
-@app.before_request
-def startup():
-    global bot_thread
-    if bot_thread is None:
-        bot_thread = threading.Thread(target=run_bot_in_thread, daemon=True)
-        bot_thread.start()
-
-bot_thread = None
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
+            context.user_data['l
