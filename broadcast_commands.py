@@ -7,8 +7,8 @@ import broadcast_manager
 
 logger = logging.getLogger(__name__)
 
-# Admin IDs
-ADMIN_IDS = [7827293530]  # Update with your admin IDs
+# Admin IDs - UPDATED
+ADMIN_IDS = [5451167865, 1529815801]
 
 # Conversation states
 BROADCAST_MESSAGE = 1
