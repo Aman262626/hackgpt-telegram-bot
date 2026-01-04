@@ -366,6 +366,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/persona - Change persona\n"
         "/lang - Change language\n"
         "/reset - Reset chat\n\n"
+                "/image <text> - Generate image 🎨\n"
+        "/video <text> - Generate video 🎬\n"
+
         "🤖 AI Features:\n"
         "• Conversation memory\n"
         "• Multi-language support\n"
@@ -996,6 +999,56 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(resp[i:i+4096], reply_markup=main_menu_keyboard(is_admin(user.id)))
     else:
         await update.message.reply_text(resp, reply_markup=main_menu_keyboard(is_admin(user.id)))
+async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if is_user_banned(user.id):
+        await update.message.reply_text("You are banned.")
+        return
+    if not context.args:
+        await update.message.reply_text("🎨 Usage: /image <description>\n\nExample: /image cute cat")
+        return
+    prompt = ' '.join(context.args)
+    try:
+        msg = await update.message.reply_text("🎨 Generating image... Wait 30-60 sec")
+        response = requests.post(f"{CUSTOM_API_URL}/generate-image", json={"prompt": prompt}, timeout=90)
+        if response.status_code == 200:
+            data = response.json()
+            image_url = data.get('image_url')
+            if image_url:
+                await msg.delete()
+                await update.message.reply_photo(photo=image_url, caption=f"🎨 {prompt}")
+            else:
+                await msg.edit_text("❌ Failed")
+        else:
+            await msg.edit_text(f"❌ Error {response.status_code}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+
+async def generate_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if is_user_banned(user.id):
+        await update.message.reply_text("You are banned.")
+        return
+    if not context.args:
+        await update.message.reply_text("🎬 Usage: /video <description>\n\nExample: /video dog running")
+        return
+    prompt = ' '.join(context.args)
+    try:
+        msg = await update.message.reply_text("🎬 Generating video... Wait 60-120 sec")
+        response = requests.post(f"{CUSTOM_API_URL}/generate-video", json={"prompt": prompt}, timeout=150)
+        if response.status_code == 200:
+            data = response.json()
+            video_url = data.get('video_url')
+            if video_url:
+                await msg.delete()
+                await update.message.reply_video(video=video_url, caption=f"🎬 {prompt}")
+            else:
+                await msg.edit_text("❌ Failed")
+        else:
+            await msg.edit_text(f"❌ Error {response.status_code}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+
 
 async def error_handler(update, context):
     logger.error(f"Error: {context.error}")
@@ -1015,6 +1068,9 @@ async def setup_application():
     application.add_handler(CommandHandler("adminstats", admin_stats))
     application.add_handler(CommandHandler("userlist", user_list))
     application.add_handler(CommandHandler("userinfo", user_info_command))
+        application.add_handler(CommandHandler("image", generate_image))
+    application.add_handler(CommandHandler("video", generate_video))
+
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CommandHandler("ban", ban_command))
     application.add_handler(CommandHandler("unban", unban_command))
