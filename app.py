@@ -5,6 +5,7 @@ import requests
 from datetime import datetime
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
+import asyncio
 
 from telegram import Update
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -608,27 +609,34 @@ def health():
     return jsonify({"ok": True}), 200
 
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
-async def webhook():
+def webhook():
     if application is None:
         return jsonify({"error": "Bot not initialized"}), 503
     
     try:
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        await application.process_update(update)
+        json_data = request.get_json(force=True)
+        update = Update.de_json(json_data, application.bot)
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(application.process_update(update))
+        loop.close()
+        
         return jsonify({"ok": True}), 200
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    setup_application()
+    application = setup_application()
     if application:
-        import asyncio
         async def set_webhook():
+            await application.initialize()
             webhook_url = f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}"
             await application.bot.set_webhook(url=webhook_url)
             logger.info(f"Webhook set to: {webhook_url}")
         
         asyncio.run(set_webhook())
     
+    logger.info(f"Starting Flask server on port {PORT}")
     app.run(host='0.0.0.0', port=PORT, debug=False)
