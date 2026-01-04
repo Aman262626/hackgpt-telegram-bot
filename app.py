@@ -44,32 +44,38 @@ SUPPORTED_PERSONAS = ["hackGPT", "DAN", "chatGPT-DEV"]
 
 ADMIN_IDS = [5451167865, 1529815801]
 
-USE_POSTGRES = DATABASE_URL and DATABASE_URL.startswith('postgres')
+USE_POSTGRES = False
 
-if USE_POSTGRES:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    logger.info("Using PostgreSQL database")
-    
-    def get_db():
-        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-    
-    def init_db():
-        conn = get_db()
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS users (
-            user_id BIGINT PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            join_date TIMESTAMP,
-            message_count INTEGER DEFAULT 0,
-            last_active TIMESTAMP,
-            is_banned INTEGER DEFAULT 0
-        )''')
-        conn.commit()
-        conn.close()
-else:
+try:
+    if DATABASE_URL and DATABASE_URL.startswith('postgres'):
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        USE_POSTGRES = True
+        logger.info("Using PostgreSQL database")
+        
+        def get_db():
+            return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        
+        def init_db():
+            conn = get_db()
+            c = conn.cursor()
+            c.execute('''CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                join_date TIMESTAMP,
+                message_count INTEGER DEFAULT 0,
+                last_active TIMESTAMP,
+                is_banned INTEGER DEFAULT 0
+            )''')
+            conn.commit()
+            conn.close()
+except Exception as e:
+    logger.warning(f"PostgreSQL setup failed: {e}. Falling back to SQLite.")
+    USE_POSTGRES = False
+
+if not USE_POSTGRES:
     import sqlite3
     logger.info("Using SQLite database")
     
