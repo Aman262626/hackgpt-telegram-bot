@@ -247,12 +247,22 @@ def status_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     lang = context.user_data.get('lang', 'hinglish')
     return f"Current persona: {persona}\nCurrent language: {SUPPORTED_LANGS.get(lang, lang)}"
 
-def main_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def main_menu_keyboard(is_admin_user: bool = False) -> InlineKeyboardMarkup:
+    buttons = [
         [InlineKeyboardButton("Persona", callback_data="menu:persona"),
          InlineKeyboardButton("Language", callback_data="menu:lang")],
         [InlineKeyboardButton("Help", callback_data="menu:help"),
          InlineKeyboardButton("Reset", callback_data="menu:reset")],
+    ]
+    if is_admin_user:
+        buttons.append([InlineKeyboardButton("🔧 Admin Panel", callback_data="menu:admin")])
+    return InlineKeyboardMarkup(buttons)
+
+def admin_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Statistics", callback_data="admin:stats"),
+         InlineKeyboardButton("👥 User List", callback_data="admin:users")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="menu:main")],
     ])
 
 def persona_keyboard(current: str) -> InlineKeyboardMarkup:
@@ -291,7 +301,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{status_text(context)}\n\n"
             "Just message karo!"
         )
-        await update.message.reply_text(welcome, reply_markup=main_menu_keyboard())
+        await update.message.reply_text(welcome, reply_markup=main_menu_keyboard(is_admin(user.id)))
     except Exception as e:
         logger.error(f"Start error: {e}")
 
@@ -302,10 +312,26 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     ensure_defaults(context)
-    text = "Help\n\nCommands:\n/start\n/help\n/persona\n/lang\n/reset"
+    text = (
+        "📖 Help\n\n"
+        "Commands:\n"
+        "/start - Start bot\n"
+        "/help - Show help\n"
+        "/persona - Change persona\n"
+        "/lang - Change language\n"
+        "/reset - Reset chat\n"
+    )
     if is_admin(user.id):
-        text += "\n\nAdmin:\n/adminstats\n/userlist\n/userinfo\n/broadcast\n/ban\n/unban"
-    await update.message.reply_text(text, reply_markup=main_menu_keyboard())
+        text += (
+            "\n🔧 Admin Commands:\n"
+            "/adminstats - Bot statistics\n"
+            "/userlist - All users\n"
+            "/userinfo <id> - User details\n"
+            "/broadcast <msg> - Send to all\n"
+            "/ban <id> - Ban user\n"
+            "/unban <id> - Unban user"
+        )
+    await update.message.reply_text(text, reply_markup=main_menu_keyboard(is_admin(user.id)))
 
 async def set_persona(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -317,7 +343,7 @@ async def set_persona(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         persona = ' '.join(context.args)
         context.user_data['persona'] = persona
-        await update.message.reply_text(f"Persona: {persona}", reply_markup=main_menu_keyboard())
+        await update.message.reply_text(f"Persona: {persona}", reply_markup=main_menu_keyboard(is_admin(user.id)))
     else:
         current = context.user_data.get('persona', 'hackGPT')
         await update.message.reply_text("Select persona:\n\n" + status_text(context),
@@ -337,7 +363,7 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data['lang'] = lang
         await update.message.reply_text(f"Language: {SUPPORTED_LANGS[lang]}",
-                                        reply_markup=main_menu_keyboard())
+                                        reply_markup=main_menu_keyboard(is_admin(user.id)))
     else:
         current = context.user_data.get('lang', 'hinglish')
         await update.message.reply_text("Select language:\n\n" + status_text(context),
@@ -355,7 +381,7 @@ async def reset_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data['persona'] = persona
     context.user_data['lang'] = lang
-    await update.message.reply_text("Reset!", reply_markup=main_menu_keyboard())
+    await update.message.reply_text("Reset!", reply_markup=main_menu_keyboard(is_admin(user.id)))
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -366,11 +392,11 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total, active, messages = get_stats()
     db_type = "PostgreSQL" if USE_POSTGRES else "SQLite"
     text = (
-        f"Bot Statistics ({db_type})\n\n"
-        f"Total Users: {total}\n"
-        f"Active Users: {active}\n"
-        f"Banned Users: {total - active}\n"
-        f"Total Messages: {messages}"
+        f"📊 Bot Statistics ({db_type})\n\n"
+        f"👥 Total Users: {total}\n"
+        f"✅ Active Users: {active}\n"
+        f"🚫 Banned Users: {total - active}\n"
+        f"💬 Total Messages: {messages}"
     )
     await update.message.reply_text(text)
 
@@ -385,9 +411,9 @@ async def user_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No users yet.")
         return
     
-    text = "User List\n\n"
+    text = "👥 User List\n\n"
     for u in users[:20]:
-        status = "Banned" if u[6] else "Active"
+        status = "🚫" if u[6] else "✅"
         text += f"{status} {u[0]} - {u[2]} (@{u[1] or 'none'})\nJoined: {u[3]}\nMessages: {u[4]}\n\n"
     
     if len(users) > 20:
@@ -417,14 +443,14 @@ async def user_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     text = (
-        f"User Info\n\n"
+        f"👤 User Info\n\n"
         f"ID: {info[0]}\n"
         f"Username: @{info[1] or 'none'}\n"
         f"Name: {info[2]} {info[3] or ''}\n"
         f"Joined: {info[4]}\n"
         f"Messages: {info[5]}\n"
         f"Last Active: {info[6]}\n"
-        f"Status: {'Banned' if info[7] else 'Active'}"
+        f"Status: {'🚫 Banned' if info[7] else '✅ Active'}"
     )
     await update.message.reply_text(text)
 
@@ -446,13 +472,13 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for u in users:
         if u[6] == 0:
             try:
-                await context.bot.send_message(chat_id=u[0], text=f"Broadcast\n\n{message}")
+                await context.bot.send_message(chat_id=u[0], text=f"📢 Broadcast\n\n{message}")
                 success += 1
             except Exception as e:
                 logger.error(f"Broadcast error for {u[0]}: {e}")
                 failed += 1
     
-    await update.message.reply_text(f"Broadcast sent!\nSuccess: {success}\nFailed: {failed}")
+    await update.message.reply_text(f"✅ Broadcast sent!\nSuccess: {success}\nFailed: {failed}")
 
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -475,7 +501,7 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     ban_user(target_id)
-    await update.message.reply_text(f"User {target_id} banned.")
+    await update.message.reply_text(f"🚫 User {target_id} banned.")
 
 async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -494,7 +520,7 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     unban_user(target_id)
-    await update.message.reply_text(f"User {target_id} unbanned.")
+    await update.message.reply_text(f"✅ User {target_id} unbanned.")
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.callback_query.from_user
@@ -506,9 +532,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data = q.data or ""
+    is_admin_user = is_admin(user.id)
 
     if data == "menu:main":
-        await q.edit_message_text("Main menu:\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+        await q.edit_message_text("Main menu:\n\n" + status_text(context), reply_markup=main_menu_keyboard(is_admin_user))
         return
     if data == "menu:persona":
         cur = context.user_data.get('persona', 'hackGPT')
@@ -519,7 +546,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("Select language:\n\n" + status_text(context), reply_markup=lang_keyboard(cur))
         return
     if data == "menu:help":
-        await q.edit_message_text("Help\n\nUse buttons or commands\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+        help_text = (
+            "📖 Help\n\n"
+            "Use buttons or commands\n\n"
+            + status_text(context)
+        )
+        await q.edit_message_text(help_text, reply_markup=main_menu_keyboard(is_admin_user))
         return
     if data == "menu:reset":
         persona = context.user_data.get('persona', 'hackGPT')
@@ -527,22 +559,59 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         context.user_data['persona'] = persona
         context.user_data['lang'] = lang
-        await q.edit_message_text("Reset!\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+        await q.edit_message_text("Reset!\n\n" + status_text(context), reply_markup=main_menu_keyboard(is_admin_user))
+        return
+    if data == "menu:admin":
+        if not is_admin_user:
+            await q.answer("Admin access required", show_alert=True)
+            return
+        await q.edit_message_text("🔧 Admin Panel\n\nSelect option:", reply_markup=admin_keyboard())
+        return
+    if data == "admin:stats":
+        if not is_admin_user:
+            await q.answer("Admin access required", show_alert=True)
+            return
+        total, active, messages = get_stats()
+        db_type = "PostgreSQL" if USE_POSTGRES else "SQLite"
+        text = (
+            f"📊 Bot Statistics ({db_type})\n\n"
+            f"👥 Total Users: {total}\n"
+            f"✅ Active Users: {active}\n"
+            f"🚫 Banned Users: {total - active}\n"
+            f"💬 Total Messages: {messages}"
+        )
+        await q.edit_message_text(text, reply_markup=admin_keyboard())
+        return
+    if data == "admin:users":
+        if not is_admin_user:
+            await q.answer("Admin access required", show_alert=True)
+            return
+        users = get_all_users()
+        if not users:
+            await q.edit_message_text("No users yet.", reply_markup=admin_keyboard())
+            return
+        text = "👥 User List\n\n"
+        for u in users[:10]:
+            status = "🚫" if u[6] else "✅"
+            text += f"{status} {u[0]} - {u[2]}\nMsgs: {u[4]}\n\n"
+        if len(users) > 10:
+            text += f"... and {len(users) - 10} more.\nUse /userlist for full list."
+        await q.edit_message_text(text, reply_markup=admin_keyboard())
         return
 
     if data.startswith("persona:"):
         p = data.split(":", 1)[1]
         context.user_data['persona'] = p
-        await q.edit_message_text(f"Persona: {p}\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+        await q.edit_message_text(f"Persona: {p}\n\n" + status_text(context), reply_markup=main_menu_keyboard(is_admin_user))
         return
 
     if data.startswith("lang:"):
         l = data.split(":", 1)[1]
         if l in SUPPORTED_LANGS:
             context.user_data['lang'] = l
-            await q.edit_message_text(f"Language: {SUPPORTED_LANGS[l]}\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+            await q.edit_message_text(f"Language: {SUPPORTED_LANGS[l]}\n\n" + status_text(context), reply_markup=main_menu_keyboard(is_admin_user))
         else:
-            await q.edit_message_text("Invalid\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+            await q.edit_message_text("Invalid\n\n" + status_text(context), reply_markup=main_menu_keyboard(is_admin_user))
         return
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -571,9 +640,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if len(resp) > 4096:
         for i in range(0, len(resp), 4096):
-            await update.message.reply_text(resp[i:i+4096], reply_markup=main_menu_keyboard())
+            await update.message.reply_text(resp[i:i+4096], reply_markup=main_menu_keyboard(is_admin(user.id)))
     else:
-        await update.message.reply_text(resp, reply_markup=main_menu_keyboard())
+        await update.message.reply_text(resp, reply_markup=main_menu_keyboard(is_admin(user.id)))
 
 async def error_handler(update, context):
     logger.error(f"Error: {context.error}")
