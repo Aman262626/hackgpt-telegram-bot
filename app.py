@@ -2,10 +2,11 @@
 import os
 import logging
 import requests
-from datetime import datetime
-from flask import Flask, request, jsonify
-from dotenv import load_dotenv
 import asyncio
+from datetime import datetime
+from flask import Flask, jsonify
+from dotenv import load_dotenv
+import threading
 
 from telegram import Update
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -30,7 +31,6 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CUSTOM_API_URL = os.getenv('CUSTOM_API_URL', 'https://hackgpt-backend.onrender.com')
 DATABASE_URL = os.getenv('DATABASE_URL')
 PORT = int(os.getenv('PORT', 10000))
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://hackgpt-telegram-bot.onrender.com')
 
 if not TELEGRAM_TOKEN:
     logger.error("ERROR: TELEGRAM_BOT_TOKEN not found!")
@@ -38,6 +38,7 @@ if not TELEGRAM_TOKEN:
 
 app = Flask(__name__)
 application = None
+bot_running = False
 
 SUPPORTED_LANGS = {"en": "English", "hi": "Hindi", "hinglish": "Hinglish"}
 SUPPORTED_PERSONAS = ["hackGPT", "DAN", "chatGPT-DEV"]
@@ -279,7 +280,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_or_update_user(user)
         
         if is_user_banned(user.id):
-            await update.message.reply_text("You are banned from using this bot.")
+            await update.message.reply_text("You are banned.")
             return
             
         ensure_defaults(context)
@@ -518,7 +519,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("Select language:\n\n" + status_text(context), reply_markup=lang_keyboard(cur))
         return
     if data == "menu:help":
-        await q.edit_message_text("Help\n\nUse buttons or commands" + status_text(context), reply_markup=main_menu_keyboard())
+        await q.edit_message_text("Help\n\nUse buttons or commands\n\n" + status_text(context), reply_markup=main_menu_keyboard())
         return
     if data == "menu:reset":
         persona = context.user_data.get('persona', 'hackGPT')
@@ -526,22 +527,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         context.user_data['persona'] = persona
         context.user_data['lang'] = lang
-        await q.edit_message_text("Reset done!\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+        await q.edit_message_text("Reset!\n\n" + status_text(context), reply_markup=main_menu_keyboard())
         return
 
     if data.startswith("persona:"):
         p = data.split(":", 1)[1]
         context.user_data['persona'] = p
-        await q.edit_message_text(f"Persona set to: {p}\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+        await q.edit_message_text(f"Persona: {p}\n\n" + status_text(context), reply_markup=main_menu_keyboard())
         return
 
     if data.startswith("lang:"):
         l = data.split(":", 1)[1]
         if l in SUPPORTED_LANGS:
             context.user_data['lang'] = l
-            await q.edit_message_text(f"Language set to: {SUPPORTED_LANGS[l]}\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+            await q.edit_message_text(f"Language: {SUPPORTED_LANGS[l]}\n\n" + status_text(context), reply_markup=main_menu_keyboard())
         else:
-            await q.edit_message_text("Invalid language\n\n" + status_text(context), reply_markup=main_menu_keyboard())
+            await q.edit_message_text("Invalid\n\n" + status_text(context), reply_markup=main_menu_keyboard())
         return
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -577,7 +578,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update, context):
     logger.error(f"Error: {context.error}")
 
-def setup_application():
+async def setup_application():
     global application
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "dummy_token":
         logger.error("TELEGRAM_BOT_TOKEN not configured!")
@@ -600,43 +601,45 @@ def setup_application():
     application.add_error_handler(error_handler)
     return application
 
+async def run_polling():
+    global application, bot_running
+    application = await setup_application()
+    if not application:
+        return
+
+    bot_running = True
+    logger.info("Deleting webhook...")
+    await application.bot.delete_webhook(drop_pending_updates=True)
+    logger.info("Starting bot polling...")
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    logger.info("Bot started successfully!")
+    await asyncio.Event().wait()
+
+def run_bot_in_thread():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(run_polling())
+
 @app.route('/', methods=['GET'])
 def index():
-    return jsonify({"status": "active", "message": "HackGPT Bot is running!"}), 200
+    return jsonify({"status": "running" if bot_running else "starting", "message": "HackGPT Bot Active!"}), 200
 
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"ok": True}), 200
 
-@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
-def webhook():
-    if application is None:
-        return jsonify({"error": "Bot not initialized"}), 503
-    
-    try:
-        json_data = request.get_json(force=True)
-        update = Update.de_json(json_data, application.bot)
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(application.process_update(update))
-        loop.close()
-        
-        return jsonify({"ok": True}), 200
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        return jsonify({"error": str(e)}), 500
+@app.before_request
+def startup():
+    global bot_thread
+    if bot_thread is None:
+        bot_thread = threading.Thread(target=run_bot_in_thread, daemon=True)
+        bot_thread.start()
+        logger.info("Bot thread started")
+
+bot_thread = None
 
 if __name__ == '__main__':
-    application = setup_application()
-    if application:
-        async def set_webhook():
-            await application.initialize()
-            webhook_url = f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}"
-            await application.bot.set_webhook(url=webhook_url)
-            logger.info(f"Webhook set to: {webhook_url}")
-        
-        asyncio.run(set_webhook())
-    
-    logger.info(f"Starting Flask server on port {PORT}")
-    app.run(host='0.0.0.0', port=PORT, debug=False)
+    logger.info(f"Starting Flask on port {PORT}")
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
