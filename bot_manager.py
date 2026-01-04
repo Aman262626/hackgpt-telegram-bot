@@ -38,9 +38,13 @@ def init_client_bots_db():
     logger.info("Client bots database initialized")
 
 def verify_bot_token(bot_token: str) -> tuple:
-    """Verify bot token synchronously"""
+    """Verify bot token with flood control handling"""
     try:
-        # Create a new event loop for this thread if needed
+        # Basic token format validation first
+        if not bot_token or len(bot_token) < 20 or ':' not in bot_token:
+            return (False, None, "Invalid token format")
+        
+        # Try to verify with Telegram API
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
@@ -54,11 +58,14 @@ def verify_bot_token(bot_token: str) -> tuple:
                 await bot.close()
                 return (True, bot_info.username, bot_info.first_name)
             except Exception as e:
-                return (False, None, str(e))
+                error_msg = str(e)
+                # If flood control, accept token anyway (admin will verify)
+                if "flood control" in error_msg.lower() or "retry in" in error_msg.lower():
+                    return (True, "pending_verification", "Bot (Pending Verification)")
+                return (False, None, error_msg)
         
         # Run the async verification
         if loop.is_running():
-            # If loop is already running, create a new one
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(lambda: asyncio.run(_verify()))
@@ -68,7 +75,8 @@ def verify_bot_token(bot_token: str) -> tuple:
             
     except Exception as e:
         logger.error(f"Token verification error: {e}")
-        return (False, None, str(e))
+        # On any error, accept token for manual verification
+        return (True, "pending_verification", "Bot (Pending Verification)")
 
 def add_client_bot_request(bot_token: str, owner_id: int, owner_username: str, owner_name: str) -> tuple:
     """Add a new client bot request (pending approval)"""
@@ -83,7 +91,7 @@ def add_client_bot_request(bot_token: str, owner_id: int, owner_username: str, o
         if existing:
             return (False, "Bot token already registered", None)
         
-        # Verify token
+        # Verify token (with flood control handling)
         success, bot_username, bot_first_name = verify_bot_token(bot_token)
         if not success:
             error_msg = str(bot_first_name)[:100] if bot_first_name else "Invalid token"
@@ -96,7 +104,11 @@ def add_client_bot_request(bot_token: str, owner_id: int, owner_username: str, o
                   (bot_token, bot_username, bot_first_name, owner_id, owner_username, owner_name, now))
         bot_id = c.lastrowid
         conn.commit()
-        return (True, f"Bot @{bot_username} registered! Waiting for admin approval.", bot_id)
+        
+        if bot_username == "pending_verification":
+            return (True, f"✅ Bot registered (ID: {bot_id})!\n⚠️ Token verification pending due to rate limits.\n⏳ Admin will verify manually.\nWaiting for approval.", bot_id)
+        else:
+            return (True, f"✅ Bot @{bot_username} registered!\n🆔 Bot ID: {bot_id}\n⏳ Waiting for admin approval.", bot_id)
     except Exception as e:
         logger.error(f"Error adding bot: {e}")
         return (False, f"Error: {str(e)[:100]}", None)
