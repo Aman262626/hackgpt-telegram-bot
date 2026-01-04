@@ -272,6 +272,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
 
 def client_bots_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Add Bot", callback_data="clientbots:addbot")],
         [InlineKeyboardButton("📊 Bot Stats", callback_data="clientbots:stats"),
          InlineKeyboardButton("📋 Bot List", callback_data="clientbots:list")],
         [InlineKeyboardButton("⏳ Pending Approvals", callback_data="clientbots:pending")],
@@ -841,6 +842,29 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await q.edit_message_text("🤖 Client Bots Management\n\nSelect option:", reply_markup=client_bots_keyboard())
         return
+    
+    # Add Bot button handler
+    if data == "clientbots:addbot":
+        if not is_admin_user:
+            await q.answer("Admin access required", show_alert=True)
+            return
+        instructions = (
+            "➕ Add New Client Bot\n\n"
+            "🔑 To add a bot, send this command:\n"
+            "/addbot <BOT_TOKEN>\n\n"
+            "📝 Example:\n"
+            "/addbot 123456:ABC-DEF1234ghIkl\n\n"
+            "👉 Get token from @BotFather\n"
+            "1. Open @BotFather in Telegram\n"
+            "2. Send /newbot\n"
+            "3. Follow instructions\n"
+            "4. Copy the token\n"
+            "5. Use /addbot command here\n\n"
+            "✅ Bot will be added and wait for your approval!"
+        )
+        await q.edit_message_text(instructions, reply_markup=client_bots_keyboard())
+        return
+    
     if data == "clientbots:stats":
         if not is_admin_user:
             await q.answer("Admin access required", show_alert=True)
